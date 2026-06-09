@@ -1,0 +1,54 @@
+# Data & audio
+*.wav
+*.mp3
+*.flac
+data/
+wham_data/
+
+# Model checkpoints & weights
+*.pt
+*.pth
+checkpoints*/
+v7_starter.pt
+
+# Training logs & outputs
+*.csv
+runs*/
+runs_pretrain/
+runs_sep/
+runs_snn/
+runs_snn_aug/
+demo_output/
+pit_output*/
+results_*/
+sep_output/
+exportToArc/
+*.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Environment & IDE
+.env
+.venv/
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Misc
+original_data_map.json
+labels.csv
