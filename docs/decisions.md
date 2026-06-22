@@ -99,6 +99,23 @@ Matmul fusion (in _process_chunk) still active and provides the main speedup.
 
 ## Training
 
+**Stage-2 fine-tune with warmstart and augmentation ablation (v12)**
+v11 reached +5.15 dB val SI-SDRi at epoch 200 with LR bottomed at 1e-6. Plain `--resume` would
+flatline because cosine schedule hit its floor. Two alternative approaches:
+(a) Continue with higher LR — risks destabilising converged weights.
+(b) Warmstart: load full model weights (EMA-shadow preferred — the exact weights that achieved
+    +5.15 dB), reset optimizer/scheduler/epoch, start fresh with gentle lr=1e-5.
+Option (b) is safer because the optimizer has no stale momentum from 200 epochs of training.
+The EMA-shadow weights are preferred over raw model_state because val SI-SDRi was measured on
+them — they are the weights that actually produced +5.15 dB.
+
+Augmentation disabled for stage-2 because the model is already converged — augmentation helps
+generalisation during long training but hurts convergence quality during short fine-tuning of
+already-generalised weights. Three ablation runs isolate the effect:
+  A (control): dataset augment ON, gain_aug=0 → measures dataset augment contribution
+  B (priority): all augment OFF → expected best for converged weights
+  C: all augment OFF, lambda_spec=0.75 → tests if stronger spectral loss improves perceptual quality
+
 **gain_aug_db = 3.0 not 6.0 (v10/v11)**
 v9 applied independent per-source ±6 dB gain augmentation in the training loop. Unknown at the time:
 `librimix_dataset.py`'s `spike_safe_augment()` already applies a GLOBAL ±6 dB gain jitter (uniform

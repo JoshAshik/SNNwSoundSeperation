@@ -1,18 +1,43 @@
 # Training
-<!-- dependencies: two_speaker_train_v11.py (active), snn_finetune.py (8-ch legacy), sep_model_v10.py -->
+<!-- dependencies: two_speaker_train_v12.py (active), two_speaker_train_v11.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py -->
 
-## Current status (v11 — ACTIVE)
+## Current status (v12 — ACTIVE)
+
+```
+Run:          v12 — Stage-2 fine-tune from v11 EMA-shadow weights
+Architecture: sep_model_v10.py  snn_mode=gru_stateful (unchanged from v11)
+Start ckpt:   checkpoints_v11/best_2spk.pt (full model warmstart, EMA-shadow preferred)
+Dataset:      Libri2Mix train-100 (13,900 pairs)
+Key changes:  Warmstart (loads full EMA-shadow weights, resets optimizer/scheduler/epoch);
+              lr=1e-5 (vs v11's 1.5e-4); freeze_epochs=0; gain_aug_db=0.0;
+              --no_train_augment disables dataset-level spike_safe_augment;
+              3-run ablation: A (dataset augment ON), B (all augment OFF), C (lambda_spec=0.75)
+Eval:         eval_dataset.py — batch SI-SDRi on dev/test (--max_samples 50 for fast loop)
+SLURM:        slurm_v12_twospeaker.sh (self-resubmitting, 6h wall, 100 epochs)
+Target:       val SI-SDRi > +7.0 dB (stop criterion); stretch target +10.0 dB
+```
+
+### v12 ablation matrix
+
+| Run | Dataset augment | gain_aug_db | lambda_spec | Purpose |
+|-----|----------------|-------------|-------------|---------|
+| A (control) | ON | 0.0 | 0.5 | Isolate effect of disabling dataset augmentation |
+| B (priority) | OFF | 0.0 | 0.5 | No augmentation — expected best for converged weights |
+| C | OFF | 0.0 | 0.75 | Test if stronger spectral loss improves perceptual quality |
+
+## Previous status (v11 — COMPLETE)
 
 ```
 Run:          v11 — StatefulGRUSeparator, Libri2Mix train-100, 200 epochs
 Architecture: sep_model_v10.py  snn_mode=gru_stateful
 Start ckpt:   checkpoints_v7/best_2spk.pt (encoder+decoder transfer only; separator fresh)
 Dataset:      Libri2Mix train-100 (13,900 pairs)
+Result:       best val SI-SDRi = +5.15 dB (ep200), train +5.88 dB, gap 0.73 dB
 Key changes:  StatefulGRUSeparator — cuDNN GRU processes full (B, 100, 256) chunk in one
               kernel call; hidden state carries between 40 non-overlapping chunks (TBPTT);
               hidden=512, n_layers=6; freeze_epochs=20; gain_aug=±3 dB; lambda_rate=0.0
-Next step:    Monitor slurm_v11_*.out on ARC
-Target:       val SI-SDRi > +10.0 dB (professor's target)
+Checkpoints:  checkpoints_v11/best_2spk.pt (val=+5.15 dB) — DO NOT OVERWRITE
+CSV log:      v11_train_log.csv (ARC)
 ```
 
 ## Previous status (v10 — CANCELLED at epoch 0)
@@ -123,7 +148,31 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | v8 | Libri2Mix | -1.65 dB | dropout 0.5 over-regularised; gap widened to 3.5 dB |
 | v9 | Libri2Mix | -2.48 dB | gain_aug ±6 dB double-applied (dataset + loop = ±12 dB); train collapsed to -1.27 dB |
 | v10 | Libri2Mix | CANCELLED | StatefulSNNSeparator: ~20 s/batch → 35,000 s/epoch |
-| v11 | Libri2Mix | IN PROGRESS | StatefulGRUSeparator; stateful cross-chunk hidden state |
+| v11 | Libri2Mix | **+5.15 dB** (ALL-TIME BEST) | StatefulGRUSeparator; gap 0.73 dB; LR bottomed at 1e-6 |
+| v12 | Libri2Mix | IN PROGRESS | Stage-2 fine-tune from v11 EMA; 3-run ablation (A/B/C) |
+
+---
+
+## Hyperparameters (v12 DEFAULTS in two_speaker_train_v12.py)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| n_epochs | 100 | Shorter than v11 (200) — fine-tuning converged weights |
+| batch_size | 8 | rtx4060ti16g 16 GB |
+| clip_len | 64,000 | 4s @ 16kHz |
+| freeze_epochs | 0 | All parameters trainable from epoch 1 |
+| lr | 1e-5 | Gentle fine-tune (v11 ended at 1e-6; this is a 10× reset) |
+| weight_decay | 1e-4 | AdamW |
+| grad_clip | 5.0 | Global norm clip |
+| ema_decay | 0.999 | EMA weights used for val/inference |
+| val_every | 5 | Validation at epochs 5,10,15,… |
+| max_wall_hours | 5.75 | Exit before ARC 6h limit |
+| lambda_spec | 0.5 | Multi-resolution spectral L1 (Run C: 0.75) |
+| lambda_rate | 0.0 | GRU has no spikes |
+| lambda_recon | 5.0 | Reconstruction MSE |
+| gain_aug_db | 0.0 | Per-source gain augmentation disabled |
+| train_augment | False | Dataset-level spike_safe_augment disabled (Run A: True) |
+| warmstart | checkpoints_v11/best_2spk.pt | Full model load (EMA-shadow preferred) |
 
 ---
 
@@ -170,14 +219,21 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 
 ## File inventory
 
-### Active pipeline (v11)
+### Active pipeline (v12)
 | File | Role | Status |
 |---|---|---|
 | `sep_model_v10.py` | Architecture — StatefulGRUSeparator + StatefulSNNSeparator + ConvDecoder | Done |
-| `two_speaker_train_v11.py` | Training loop — StatefulGRUSeparator, freeze_epochs=20, gain_aug=±3 dB | Done |
-| `slurm_v11_twospeaker.sh` | ARC SLURM script (self-resubmitting, 6h wall) | Done |
-| `librimix_dataset.py` | Libri2Mix pre-generated wav reader (spike_safe_augment inside) | Done |
-| `two_speaker_inference.py` | 2-speaker PIT inference with SI-SDRi | Done |
+| `two_speaker_train_v12.py` | Stage-2 fine-tune — warmstart from v11, lr=1e-5, no augment | Done |
+| `slurm_v12_twospeaker.sh` | ARC SLURM script for v12 (self-resubmitting, 6h wall, 100 epochs) | Done |
+| `eval_dataset.py` | Batch SI-SDRi evaluation on dev/test (--max_samples for dev50) | Done |
+| `librimix_dataset.py` | Libri2Mix reader (train_augment param for toggling augmentation) | Done |
+| `two_speaker_inference.py` | 2-speaker PIT inference (v11/v12 compatible via sep_model_v10) | Done |
+
+### v11 pipeline (reference)
+| File | Role | Status |
+|---|---|---|
+| `two_speaker_train_v11.py` | v11 training loop (--warmstart added for reuse) | Done |
+| `slurm_v11_twospeaker.sh` | v11 ARC SLURM script | Done |
 
 ### v10 (reference — architecture only; training script has performance bug)
 | File | Role |
@@ -226,8 +282,10 @@ ARC (~/SNNwSoundSeperation/):
   checkpoints_v8/best_2spk.pt            — v8 best (val=-1.65 dB)
   checkpoints_v9/best_2spk.pt            — v9 best (val=-2.48 dB)
   checkpoints_v10/                       — empty (v10 cancelled at ~200 batches)
-  checkpoints_v11/best_2spk.pt           — v11 best (IN PROGRESS)
-  checkpoints_v11/best_2spk_latest.pt    — v11 latest epoch
+  checkpoints_v11/best_2spk.pt           — v11 best (val=+5.15 dB) — DO NOT OVERWRITE
+  checkpoints_v11/best_2spk_latest.pt    — v11 ep200 (training complete)
+  checkpoints_v12/best_2spk.pt           — v12 best (IN PROGRESS)
+  checkpoints_v12/best_2spk_latest.pt    — v12 latest epoch
 ```
 
 ### CSV logs
@@ -238,27 +296,63 @@ ARC (~/SNNwSoundSeperation/):
 - v7 (2-spk): `v7_train_log.csv` (ARC)
 - v8 (2-spk): `v8_train_log.csv` (ARC)
 - v9 (2-spk): `v9_train_log.csv` (ARC)
-- v11 (2-spk): `v11_train_log.csv` (ARC, in progress)
+- v11 (2-spk): `v11_train_log.csv` (ARC, complete)
+- v12 (2-spk): `v12_train_log.csv` (ARC, in progress — Run B)
+- v12a (2-spk): `v12a_train_log.csv` (ARC, Run A — control)
+- v12c (2-spk): `v12c_train_log.csv` (ARC, Run C — lambda_spec=0.75)
 
 ---
 
 ## Commands
 
-### v11: Requeue after interruption (PRIMARY)
-```bash
-# On ARC login node — --resume is hardcoded in the script
-cd ~/SNNwSoundSeperation && sbatch slurm_v11_twospeaker.sh
-```
-
-### v11: Initial deploy to ARC
+### v12: Deploy to ARC and start Run B (PRIMARY)
 ```bash
 # From Git Bash (Windows)
 scp -i "/c/Users/Josh Ashik/private_key.pem" \
-  sep_model_v10.py two_speaker_train_v11.py slurm_v11_twospeaker.sh \
+  two_speaker_inference.py two_speaker_train_v11.py two_speaker_train_v12.py \
+  eval_dataset.py slurm_v12_twospeaker.sh librimix_dataset.py CLAUDE.md \
   juashik@arc.csc.ncsu.edu:~/SNNwSoundSeperation/
 
 # On ARC (first time only)
-sed -i 's/\r//' slurm_v11_twospeaker.sh && mkdir -p checkpoints_v11 && sbatch slurm_v11_twospeaker.sh
+sed -i 's/\r//' slurm_v12_twospeaker.sh && mkdir -p checkpoints_v12 && sbatch slurm_v12_twospeaker.sh
+```
+
+### v12: Run all 3 ablations in parallel
+```bash
+# Run B (priority — no augmentation):
+sbatch slurm_v12_twospeaker.sh
+
+# Run A (control — dataset augment ON):
+mkdir -p checkpoints_v12a
+sed 's|CKPT_DIR=./checkpoints_v12|CKPT_DIR=./checkpoints_v12a|; s|--no_train_augment|--train_augment --log_dir ./runs_v12a --csv_path ./v12a_train_log.csv|' slurm_v12_twospeaker.sh > slurm_v12a.sh
+sed -i 's/snn_v12/snn_v12a/g' slurm_v12a.sh
+sbatch slurm_v12a.sh
+
+# Run C (lambda_spec=0.75):
+mkdir -p checkpoints_v12c
+sed 's|CKPT_DIR=./checkpoints_v12|CKPT_DIR=./checkpoints_v12c|; s|--no_train_augment|--no_train_augment --lambda_spec 0.75 --log_dir ./runs_v12c --csv_path ./v12c_train_log.csv|' slurm_v12_twospeaker.sh > slurm_v12c.sh
+sed -i 's/snn_v12/snn_v12c/g' slurm_v12c.sh
+sbatch slurm_v12c.sh
+
+# Verify all three queued:
+squeue -u juashik
+```
+
+### v12: Evaluate a checkpoint
+```bash
+python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --output_csv eval_dev_v12.csv
+
+# Fast dev50 for iteration:
+python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --max_samples 50
+```
+
+### v11: Requeue after interruption (legacy)
+```bash
+cd ~/SNNwSoundSeperation && sbatch slurm_v11_twospeaker.sh
 ```
 
 ### v7: Requeue (reference — if ever needed)

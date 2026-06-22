@@ -39,8 +39,16 @@ Sources are zero-padded to the length of the longer utterance (not truncated). M
 Reads pre-generated wav files — no on-the-fly mixing. Returns `(mixture, s1, s2)` tensors at fixed
 `clip_len=64000` (4s). Crops or tile-pads all three wavs with the same start offset so `mix = s1 + s2`
 is preserved after cropping. Peak-normalises using the mixture peak (uniform scale applied to all three).
-Applies spike-safe augmentation (gain jitter, polarity inversion, circular shift, additive noise,
-cosine taper) during training. Smoke test: `python3 librimix_dataset.py <librimix_root>`.
+Applies spike-safe augmentation (gain jitter ±6 dB, polarity inversion, circular shift, additive noise,
+cosine taper) during training when `augment=True`.
+
+`build_librimix_dataloaders()` accepts a `train_augment` parameter (default: `True`). Setting
+`train_augment=False` disables all dataset-level augmentation for the training split. This is used
+by v12 stage-2 fine-tuning (`--no_train_augment`) to avoid perturbing converged weights. Note that
+this is separate from the per-source gain augmentation in the training script (`gain_aug_db`) — both
+can be independently controlled.
+
+Smoke test: `python3 librimix_dataset.py <librimix_root>`.
 
 ### Why Libri2Mix instead of FSD50K
 FSD50K is environmental noise (impacts, weather, alerts). The academic 10 dB SI-SDRi target is defined on clean speech separation (Libri2Mix). Domain mismatch was the primary ceiling for v3–v6. See decisions.md for full rationale.

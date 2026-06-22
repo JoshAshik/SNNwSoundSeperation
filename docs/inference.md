@@ -1,19 +1,19 @@
 # Inference
-<!-- dependencies: two_speaker_inference.py, sep_inference.py, sep_model.py -->
+<!-- dependencies: two_speaker_inference.py, eval_dataset.py, sep_inference.py, sep_model_v10.py, sep_model.py -->
 
 ## Two-speaker inference (two_speaker_inference.py)
 
 ### Basic usage
 ```bash
-# Separate a mixture into two waveforms:
+# Separate a mixture into two waveforms (v11/v12 checkpoint):
 python3 two_speaker_inference.py \
-    --model  checkpoints_snn/best_snn_v2.pt \
+    --model  checkpoints_v11/best_2spk.pt \
     --input  mix.wav \
     --out_dir ./pit_output
 
 # With reference sources for SI-SDRi scoring:
 python3 two_speaker_inference.py \
-    --model  checkpoints_snn/best_snn_v2.pt \
+    --model  checkpoints_v12/best_2spk.pt \
     --input  mix.wav \
     --ref1   source1.wav \
     --ref2   source2.wav \
@@ -21,7 +21,7 @@ python3 two_speaker_inference.py \
 
 # Also save a copy of the input mixture:
 python3 two_speaker_inference.py \
-    --model  checkpoints_snn/best_snn_v2.pt \
+    --model  checkpoints_v12/best_2spk.pt \
     --input  mix.wav \
     --save_mixture
 ```
@@ -80,8 +80,46 @@ EMA weights (`ema_state["shadow"]`) are always used for inference when present.
 
 **v6 and earlier** used a single `ConvTranspose1d` decoder (no refinement blocks).
 `two_speaker_inference.py` loads the model architecture from `model_cfg` in the checkpoint,
-so it works with both v6/v7 (`sep_model.py`/`sep_model_v7.py`) and v10/v11 (`sep_model_v10.py`)
-checkpoints provided the correct model module is imported.
+so it works with both v6/v7 (`sep_model.py`/`sep_model_v7.py`) and v10/v11/v12 (`sep_model_v10.py`)
+checkpoints. The import uses a try/except fallback: prefers `sep_model_v10` (v11/v12), falls back
+to `sep_model` (v3-v7) if `sep_model_v10.py` is not present.
+
+---
+
+## Batch evaluation (eval_dataset.py)
+
+Evaluates a checkpoint on an entire Libri2Mix split (dev, test, or train-100).
+Reports per-sample SI-SDRi with summary statistics (mean, median, std, worst-5).
+
+### Usage
+```bash
+# Full dev evaluation:
+python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --output_csv eval_dev_v12.csv
+
+# Fast dev50 subset (for iteration during ablation):
+python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --max_samples 50
+```
+
+### Flags
+| Flag | Default | Description |
+|---|---|---|
+| `--model` | required | Path to `.pt` checkpoint |
+| `--librimix_root` | required | Libri2Mix wav16k/max root |
+| `--split` | `dev` | `dev`, `test`, or `train-100` |
+| `--max_samples` | `0` (all) | Limit to first N samples (use 50 for fast iteration) |
+| `--output_csv` | none | Save per-sample SI-SDRi to CSV |
+
+### Output
+- Running mean SI-SDRi printed every 50 samples
+- Final summary: mean, median, std, min, max, worst-5 samples
+- Optional CSV with columns: `stem`, `si_sdri_db`
+
+Uses EMA-shadow weights when present, same as single-file inference.
+Uses PIT (best permutation) for each sample independently.
 
 ---
 
