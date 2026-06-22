@@ -38,7 +38,10 @@ import torch.nn.functional as F
 import torchaudio
 import torchaudio.transforms as T
 
-from sep_model import SNNTasNet
+try:
+    from sep_model_v10 import SNNTasNet
+except ImportError:
+    from sep_model import SNNTasNet
 
 SAMPLE_RATE = 16_000
 
@@ -62,8 +65,10 @@ def load_model(ckpt_path: str, device: torch.device) -> SNNTasNet:
     model_cfg = ckpt.get("model_cfg", {})
     # Provide safe defaults that match the current DEFAULTS in snn_finetune.py
     defaults = dict(n_filters=256, kernel_sz=32, stride=16,
-                    hidden=256, n_layers=3, dropout=0.3,
-                    snn_mode="snn", snn_chunk=100, use_weight_norm=False)
+                    hidden=512, n_layers=6, dropout=0.35,
+                    snn_mode="gru_stateful", snn_chunk=100,
+                    use_weight_norm=False,
+                    decoder_refine=3, decoder_groups=8)
     defaults.update(model_cfg)
 
     n_speakers = defaults.pop("n_speakers", 2)

@@ -194,6 +194,7 @@ def build_librimix_dataloaders(
     clip_len:      int = DEFAULT_CLIP_LEN,
     batch_size:    int = 8,
     num_workers:   int = 8,
+    train_augment: bool = True,
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Build train and val DataLoaders from a Libri2Mix root directory.
@@ -205,11 +206,12 @@ def build_librimix_dataloaders(
         clip_len:      Fixed waveform length in samples (crop/pad applied).
         batch_size:    Batch size for both loaders.
         num_workers:   DataLoader worker processes.
+        train_augment: Whether to apply spike_safe_augment on training data.
 
     Returns:
         (train_loader, val_loader)
     """
-    train_ds = LibriMixDataset(librimix_root, train_split, clip_len, augment=True)
+    train_ds = LibriMixDataset(librimix_root, train_split, clip_len, augment=train_augment)
     val_ds   = LibriMixDataset(librimix_root, val_split,   clip_len, augment=False)
 
     train_loader = DataLoader(

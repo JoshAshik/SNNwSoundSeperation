@@ -1,40 +1,33 @@
 """
-two_speaker_train_v11.py — v11 training: stateful GRU-TasNet on Libri2Mix.
+two_speaker_train_v12.py — v12 stage-2 fine-tune: warm-start from v11 best.
 
-Architecture: SNNTasNet v11 (sep_model_v10.py, snn_mode=gru_stateful)
-  Encoder:    Conv1d (1->256, k=32, s=16)           [transferred from v7 best]
-  Separator:  StatefulGRUSeparator                   [NEW — freshly initialised]
-                hidden=512, n_layers=6, chunk=100
-                GRU hidden state persists across 40 chunks per 4 s clip
-  Decoder:    ConvDecoder (3x Conv1d+GN+PReLU -> ConvTranspose1d)
-                                                     [transferred from v7 best]
+Architecture: SNNTasNet v12 (sep_model_v10.py, snn_mode=gru_stateful)
+  Same as v11 — no architecture changes.
 
-v11 changes vs v10:
-  - StatefulGRUSeparator replaces StatefulSNNSeparator
-      Single cuDNN kernel per chunk instead of 100 Python LIF iterations
-      Expected epoch time: 2000-4000 s (vs ~35000 s for v10)
-  - lambda_rate = 0.0 (no spike regularisation — GRU has no spikes)
-  - Partial weight transfer: encoder + decoder from checkpoints_v7/best_2spk.pt
-  - Everything else identical to v10 (freeze_epochs=20, gain_aug=3 dB, etc.)
+v12 changes vs v11:
+  - Stage-2 fine-tune: loads full v11 EMA-shadow weights via --warmstart
+  - lr = 1e-5 (vs 1.5e-4) — gentle fine-tuning of converged weights
+  - freeze_epochs = 0 — all parameters trainable from epoch 1
+  - gain_aug_db = 0.0 — no per-source gain augmentation
+  - --no_train_augment disables dataset-level spike_safe_augment
+  - n_epochs = 100 (shorter run; cosine 1e-5 → 1e-6)
 
-Why v11 over v10:
-  v10's StatefulSNNSeparator processes each of 40 chunks with a Python for loop
-  over 100 LIF time steps. That is 4000 Python-CUDA dispatches per forward pass
-  on batch_size=8, making each batch ~20 s. v11 replaces the inner Python loop
-  with a single cuDNN GRU call, giving ~100x speedup on the separator step.
-  The stateful cross-chunk innovation is preserved: GRU hidden state carries
-  between chunks (detached at boundaries, TBPTT).
+Ablation matrix (all use this script):
+  Run A (control):  default + --train_augment  (dataset augment ON)
+  Run B (priority):  default (dataset augment OFF via --no_train_augment)
+  Run C:             default + --lambda_spec 0.75
 
 Dataset:   LibriMixDataset — pre-generated Libri2Mix wav16k/max/
-Resume:    --resume loads checkpoints_v11/best_2spk_latest.pt
-SLURM:     slurm_v11_twospeaker.sh (self-resubmitting, 6 h wall)
+Resume:    --resume loads checkpoints_v12/best_2spk_latest.pt
+Warmstart: --warmstart (default: checkpoints_v11/best_2spk.pt)
+SLURM:     slurm_v12_twospeaker.sh (self-resubmitting, 6 h wall)
 
 Usage (smoke test):
-    python3 two_speaker_train_v11.py --n_epochs 2 --batch_size 2 --num_workers 0 \\
+    python3 two_speaker_train_v12.py --n_epochs 2 --batch_size 2 --num_workers 0 \\
         --librimix_root ./data/librimix --max_wall_hours 0
 
 Usage (ARC):
-    sbatch slurm_v11_twospeaker.sh
+    sbatch slurm_v12_twospeaker.sh
 """
 
 import os
@@ -62,7 +55,7 @@ from librimix_dataset import build_librimix_dataloaders, DEFAULT_CLIP_LEN
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Defaults
+# Defaults  (v12 stage-2 fine-tune)
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULTS = dict(
@@ -83,30 +76,31 @@ DEFAULTS = dict(
     decoder_refine    = 3,
     decoder_groups    = 8,
     # ── training ──────────────────────────────────────────────────────────────
-    n_epochs          = 200,
+    n_epochs          = 100,
     batch_size        = 8,
     num_workers       = 8,
-    lr                = 1.5e-4,
-    lr_finetune       = 5e-5,
+    lr                = 1e-5,
     weight_decay      = 1e-4,
-    freeze_epochs     = 20,
+    freeze_epochs     = 0,
     val_every         = 5,
     grad_clip         = 5.0,
     ema_decay         = 0.999,
     seed              = 42,
     # ── augmentation ──────────────────────────────────────────────────────────
-    gain_aug_db       = 3.0,
+    gain_aug_db       = 0.0,
+    train_augment     = False,
     # ── loss ──────────────────────────────────────────────────────────────────
     lambda_spec           = 0.5,
-    lambda_rate           = 0.0,    # v11: GRU has no spikes — spike reg disabled
+    lambda_rate           = 0.0,
     lambda_recon          = 5.0,
     target_spike_rate     = 0.10,
     target_spike_rate_max = 0.30,
     # ── paths ─────────────────────────────────────────────────────────────────
-    starter_ckpt      = "./checkpoints_v7/best_2spk.pt",
-    ckpt_dir          = "./checkpoints_v11",
-    log_dir           = "./runs_v11",
-    csv_path          = "./v11_train_log.csv",
+    warmstart         = "./checkpoints_v11/best_2spk.pt",
+    starter_ckpt      = "./checkpoints_v11/best_2spk.pt",
+    ckpt_dir          = "./checkpoints_v12",
+    log_dir           = "./runs_v12",
+    csv_path          = "./v12_train_log.csv",
     # ── runtime ───────────────────────────────────────────────────────────────
     resume            = False,
     max_wall_hours    = 0.0,
@@ -259,8 +253,6 @@ def pit_forward(
     spec_loss  = (_mr_spectral_loss(est_t1, t1) + _mr_spectral_loss(est_t2, t2)) / 2
     recon_loss = _recon_loss(est, mixture)
 
-    # Always move rate_t to the same device as si_sdr_loss.
-    # _spike_rate_loss returns a CPU tensor when spike_recs is empty (GRU mode).
     rate_t = (rate_loss.to(si_sdr_loss.device) if isinstance(rate_loss, torch.Tensor)
               else torch.tensor(rate_loss, device=si_sdr_loss.device))
 
@@ -395,13 +387,13 @@ def run_epoch(model, loader, optimizer, device, scaler, cfg,
 
 def _parse_args(defaults: dict) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="v11 stateful GRU-TasNet training on Libri2Mix",
+        description="v12 stage-2 fine-tune: warm-start from v11 best",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--resume",          action="store_true")
-    p.add_argument("--warmstart",       type=str, default="",
+    p.add_argument("--warmstart",       type=str, default=defaults["warmstart"],
                    help="Load full model weights (EMA-preferred) from this checkpoint, "
-                        "but reset optimizer/scheduler/epoch. For stage-2 fine-tuning.")
+                        "but reset optimizer/scheduler/epoch.")
     p.add_argument("--max_wall_hours",  type=float, default=defaults["max_wall_hours"])
     p.add_argument("--n_epochs",        type=int,   default=defaults["n_epochs"])
     p.add_argument("--batch_size",      type=int,   default=defaults["batch_size"])
@@ -418,7 +410,6 @@ def _parse_args(defaults: dict) -> argparse.Namespace:
     p.add_argument("--decoder_refine",  type=int,   default=defaults["decoder_refine"])
     p.add_argument("--freeze_epochs",   type=int,   default=defaults["freeze_epochs"])
     p.add_argument("--lr",              type=float, default=defaults["lr"])
-    p.add_argument("--lr_finetune",     type=float, default=defaults["lr_finetune"])
     p.add_argument("--lambda_rate",     type=float, default=defaults["lambda_rate"])
     p.add_argument("--lambda_spec",     type=float, default=defaults["lambda_spec"])
     p.add_argument("--lambda_recon",    type=float, default=defaults["lambda_recon"])
@@ -427,6 +418,12 @@ def _parse_args(defaults: dict) -> argparse.Namespace:
     p.add_argument("--seed",            type=int,   default=defaults["seed"])
     p.add_argument("--log_dir",         type=str,   default=defaults["log_dir"])
     p.add_argument("--csv_path",        type=str,   default=defaults["csv_path"])
+    aug_group = p.add_mutually_exclusive_group()
+    aug_group.add_argument("--no_train_augment", dest="train_augment", action="store_false",
+                           help="Disable dataset-level spike_safe_augment on training data.")
+    aug_group.add_argument("--train_augment",    dest="train_augment", action="store_true",
+                           help="Enable dataset-level spike_safe_augment on training data.")
+    p.set_defaults(train_augment=defaults["train_augment"])
 
     cfg = p.parse_args()
     for k, v in defaults.items():
@@ -452,17 +449,19 @@ def main() -> None:
     print(f"\n[data] Building Libri2Mix dataloaders from {cfg.librimix_root}")
     print(f"       train={cfg.train_split}  val={cfg.val_split}  "
           f"clip_len={cfg.clip_len} ({cfg.clip_len/16000:.1f}s)")
+    print(f"[aug]  dataset augment={'ON' if cfg.train_augment else 'OFF'}  "
+          f"per-source gain_aug_db=+-{cfg.gain_aug_db} dB")
     train_loader, val_loader = build_librimix_dataloaders(
-        librimix_root = cfg.librimix_root,
-        train_split   = cfg.train_split,
-        val_split     = cfg.val_split,
-        clip_len      = cfg.clip_len,
-        batch_size    = cfg.batch_size,
-        num_workers   = cfg.num_workers,
+        librimix_root  = cfg.librimix_root,
+        train_split    = cfg.train_split,
+        val_split      = cfg.val_split,
+        clip_len       = cfg.clip_len,
+        batch_size     = cfg.batch_size,
+        num_workers    = cfg.num_workers,
+        train_augment  = cfg.train_augment,
     )
     print(f"[data] train={len(train_loader.dataset)} files ({len(train_loader)} batches/ep)  "
           f"val={len(val_loader.dataset)} files ({len(val_loader)} batches/ep)")
-    print(f"[aug]  per-source gain_aug_db=+-{cfg.gain_aug_db} dB (train only)")
 
     # ── Checkpoint paths ──────────────────────────────────────────────────────
     ckpt_dir    = Path(cfg.ckpt_dir)
@@ -501,21 +500,17 @@ def main() -> None:
 
     n_params = sum(p.numel() for p in model.parameters())
     n_chunks = (cfg.clip_len // cfg.stride) // cfg.snn_chunk
-    print(f"\n[model] SNNTasNet v11  params={n_params:,}")
+    print(f"\n[model] SNNTasNet v12 (stage-2)  params={n_params:,}")
     print(f"        hidden={cfg.hidden}  n_layers={cfg.n_layers}  "
           f"dropout={cfg.dropout}  snn_mode=gru_stateful")
     print(f"        chunk={cfg.snn_chunk} frames  ~{n_chunks} sequential chunks per clip")
 
-    # ── Optimizer: three-group AdamW ──────────────────────────────────────────
-    optimizer = AdamW([
-        {"params": model.separator.parameters(), "lr": cfg.lr},
-        {"params": model.decoder.parameters(),   "lr": cfg.lr},
-        {"params": model.encoder.parameters(),   "lr": cfg.lr},
-    ], weight_decay=cfg.weight_decay)
+    # ── Optimizer: single-group AdamW (no freeze phase) ──────────────────────
+    optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
-    _finetune_T = max(1, cfg.n_epochs - cfg.freeze_epochs)
+    _T = max(1, cfg.n_epochs - cfg.freeze_epochs)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=_finetune_T, eta_min=1e-6)
+        optimizer, T_max=_T, eta_min=1e-6)
 
     scaler = GradScaler("cuda") if device.type == "cuda" else None
 
@@ -535,8 +530,7 @@ def main() -> None:
         _actually_resumed = True
         print(f"[resume] Epoch {start_epoch}  best={best_val:+.2f} dB")
 
-    # ── Warmstart: full model from checkpoint, fresh optimizer ──────────────
-    _warmstarted = False
+    # ── Warmstart: full model from checkpoint, fresh optimizer ────────────────
     if cfg.warmstart and not _actually_resumed:
         ws_path = Path(cfg.warmstart)
         if ws_path.exists():
@@ -558,55 +552,18 @@ def main() -> None:
             print(f"[warmstart] Source: epoch={ws_epoch}  val_SI-SDRi={ws_val:+.2f} dB")
             print(f"[warmstart] Optimizer/scheduler/epoch: RESET (fresh stage-2)")
             del ws_ckpt
-            _warmstarted = True
         else:
-            print(f"\n[warn] Warmstart checkpoint not found: {ws_path}")
-
-    # ── Partial weight transfer from v7 best (fresh start only) ──────────────
-    starter_path = Path(cfg.starter_ckpt)
-    if not _actually_resumed and not _warmstarted:
-        if starter_path.exists():
-            print(f"\n[starter] Partial transfer from {starter_path}")
-            pt        = torch.load(starter_path, map_location=device, weights_only=False)
-            v7_state  = pt.get("model_state", pt) if isinstance(pt, dict) else pt
-            v11_state = model.state_dict()
-            copied = 0
-            for k, v in v7_state.items():
-                if k.startswith("encoder.") or k.startswith("decoder."):
-                    if k in v11_state and v11_state[k].shape == v.shape:
-                        v11_state[k] = v
-                        copied += 1
-            model.load_state_dict(v11_state)
-            print(f"[starter] Copied {copied} tensors  "
-                  f"(encoder={sum(1 for k in v7_state if k.startswith('encoder.'))} + "
-                  f"decoder={sum(1 for k in v7_state if k.startswith('decoder.'))})")
-            print(f"[starter] Separator: freshly initialised "
-                  f"(hidden={cfg.hidden}, n_layers={cfg.n_layers})")
-            del pt, v7_state
-        else:
-            print(f"\n[warn] No starter checkpoint at {starter_path}. "
-                  "Training all parameters from scratch.")
+            print(f"\n[warn] Warmstart checkpoint not found: {ws_path}. "
+                  "Training from scratch.")
 
     # ── EMA (init after weights are loaded) ───────────────────────────────────
     ema = EMA(model, decay=cfg.ema_decay)
     if _actually_resumed and _ckpt is not None and "ema_state" in _ckpt:
         ema.load_state_dict(_ckpt["ema_state"])
 
-    # ── Freeze encoder if still in warm-up phase ─────────────────────────────
-    _encoder_frozen = False
-    if cfg.freeze_epochs > 0 and start_epoch <= cfg.freeze_epochs:
-        for p in model.encoder.parameters():
-            p.requires_grad_(False)
-        _encoder_frozen = True
-        print(f"[freeze] Encoder frozen  (epoch {start_epoch} <= freeze_epochs={cfg.freeze_epochs})")
-    elif start_epoch > cfg.freeze_epochs:
-        optimizer.param_groups[2]["lr"] = cfg.lr_finetune
-        print(f"[freeze] Encoder already in finetune phase "
-              f"(epoch {start_epoch} > freeze_epochs={cfg.freeze_epochs})")
-
     # ── CSV ───────────────────────────────────────────────────────────────────
     csv_path = Path(cfg.csv_path)
-    _header  = ["epoch", "phase", "trn_loss", "trn_si_sdri", "val_si_sdri",
+    _header  = ["epoch", "trn_loss", "trn_si_sdri", "val_si_sdri",
                  "gap", "spike_rate", "recon_loss", "spec_loss",
                  "lr", "epoch_time_s", "is_best"]
     if not cfg.resume or not csv_path.exists():
@@ -620,25 +577,14 @@ def main() -> None:
     epoch_times: deque = deque(maxlen=10)
     vl: dict = {}
 
-    sep_line = "-" * 112
+    sep_line = "-" * 105
     print(f"\n{sep_line}")
-    print(f"{'Ep':>5}  {'Phase':>7}  {'TrnLoss':>8}  {'TrnSI-SDRi':>10}  "
+    print(f"{'Ep':>5}  {'TrnLoss':>8}  {'TrnSI-SDRi':>10}  "
           f"{'ValSI-SDRi':>10}  {'Gap':>7}  {'Spike':>7}  {'LR':>8}  {'t':>6}  {'ETA':>8}")
     print(sep_line)
 
     for epoch in range(start_epoch, cfg.n_epochs + 1):
         t0 = time.time()
-
-        # ── Freeze / unfreeze transition ──────────────────────────────────────
-        if _encoder_frozen and epoch > cfg.freeze_epochs:
-            for p in model.encoder.parameters():
-                p.requires_grad_(True)
-            optimizer.param_groups[2]["lr"] = cfg.lr_finetune
-            _encoder_frozen = False
-            print(f"\n[freeze] Encoder unfrozen at epoch {epoch}  "
-                  f"enc_lr={cfg.lr_finetune:.1e}")
-
-        phase = "freeze" if epoch <= cfg.freeze_epochs else "finetune"
 
         # ── Train ─────────────────────────────────────────────────────────────
         tr = run_epoch(model, train_loader, optimizer, device, scaler,
@@ -652,7 +598,7 @@ def main() -> None:
                            cfg, is_train=False, ema=None)
             ema.restore()
 
-        # ── Scheduler: only step during finetune phase ────────────────────────
+        # ── Scheduler ─────────────────────────────────────────────────────────
         if epoch > cfg.freeze_epochs:
             scheduler.step()
 
@@ -670,7 +616,7 @@ def main() -> None:
         else:
             val_str = f"{'---':>9}    {'---':>6}   {'---':>7}"
 
-        print(f"{epoch:>5}/{cfg.n_epochs}  {phase:>7}  "
+        print(f"{epoch:>5}/{cfg.n_epochs}  "
               f"{tr['loss']:>8.4f}  {tr['si_sdri']:>+9.2f}dB  "
               f"{val_str}  {lr:.2e}  {dt:>5.0f}s  {eta:>8}")
 
@@ -698,7 +644,7 @@ def main() -> None:
         # ── CSV ───────────────────────────────────────────────────────────────
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow([
-                epoch, phase,
+                epoch,
                 round(tr["loss"],        4), round(tr["si_sdri"],  4),
                 round(vl["si_sdri"],     4) if do_val else "",
                 round(gap,               4) if do_val else "",
