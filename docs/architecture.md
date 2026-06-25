@@ -1,7 +1,7 @@
 # Architecture
 <!-- dependencies: sep_model_v10.py (active), sep_model_v7.py (v7 reference), sep_model.py (v3–v6 reference) -->
 
-## SNNTasNet model graph (v11 — ACTIVE, snn_mode="gru_stateful")
+## SNNTasNet model graph (v12 — ACTIVE, snn_mode="gru_stateful")
 
 ```
 Input: (B, T)  — mono mixture, T=64000 (4s @ 16kHz)
@@ -10,7 +10,7 @@ Encoder:   Conv1d(1→256, kernel=32, stride=16, ReLU)         [transferred from
            → (B, 256, L)  where L=4000 (T/stride)
            SpecAugment (training only): zero 2 random freq bands
 
-Separator: StatefulGRUSeparator  [snn_mode="gru_stateful"]   [NEW in v11]
+Separator: StatefulGRUSeparator  [snn_mode="gru_stateful"]   [introduced in v11]
   - LayerNorm(256) applied to encoder output
   - Split into 40 non-overlapping chunks of 100 frames (hop=chunk=100)
   - For each chunk (40 Python iterations):
@@ -76,7 +76,7 @@ Separator: ChunkedSNNSeparator  [snn_mode="snn"]
 Decoder:   ConvDecoder (same as v11)
 ```
 
-hidden=256, n_layers=3. Defined in sep_model_v7.py. Best checkpoint: -1.16 dB (all-time best).
+hidden=256, n_layers=3. Defined in sep_model_v7.py. Best checkpoint: -1.16 dB.
 
 **GRU mode** (`snn_mode="gru"`): ChunkedGRUSeparator — bidirectional GRU, ALL chunks batched in parallel. Used for reference/pre-training only.
 **Stateful GRU** (`snn_mode="gru_stateful"`): StatefulGRUSeparator — v11 default, sequential chunks with carried state. In sep_model_v10.py.
@@ -217,21 +217,23 @@ SeparationLoss(
 # clip_len: 64,000 samples (4s @ 16kHz)
 # starting checkpoint: v7_starter.pt (encoder from v6, separator+ConvDecoder fresh)
 # dataset: Libri2Mix train-100 (13,900 pre-generated pairs on ARC BeeGFS)
-# result: val=-1.16 dB (all-time best)
+# result: val=-1.16 dB
 ```
 
 ---
 
-## v10/v11 config (sep_model_v10.py)
+## v10/v11/v12 config (sep_model_v10.py)
 
 ```python
-# v11 (gru_stateful — ACTIVE):
+# v11/v12 (gru_stateful — ACTIVE):
 {"n_filters":256, "kernel_sz":32, "stride":16,
  "hidden":512, "n_layers":6, "dropout":0.35,
  "snn_mode":"gru_stateful", "snn_chunk":100, "n_speakers":2,
  "decoder_refine":3, "decoder_groups":8, "use_weight_norm":False}
-# starter: checkpoints_v7/best_2spk.pt (encoder+decoder only; separator fresh)
-# lambda_rate=0.0 (no spikes), gain_aug_db=3.0, freeze_epochs=20
+# v11 starter: checkpoints_v7/best_2spk.pt (encoder+decoder only; separator fresh)
+# v12 warmstart: checkpoints_v11/best_2spk.pt (full EMA-shadow model)
+# v12 best: checkpoints_v12a/best_2spk.pt (val SI-SDRi=+5.46 dB)
+# lambda_rate=0.0 (no spikes); v12 gain_aug_db=0.0, freeze_epochs=0, lambda_spec=0.5
 
 # v10 (snn_stateful — reference, never completed):
 # {"snn_mode":"snn_stateful", ...}  — same dims as v11 but LIF separator
@@ -283,13 +285,13 @@ so inference scripts rebuild the model correctly.
 
 | What | File | Notes |
 |---|---|---|
-| StatefulGRUSeparator | `sep_model_v10.py` | v11 active separator |
+| StatefulGRUSeparator | `sep_model_v10.py` | v11/v12 active separator |
 | StatefulSNNSeparator | `sep_model_v10.py` | v10 design (too slow) |
 | LIFResidualBlock (beta clamp) | `sep_model_v10.py` | shared with v7 |
 | ChunkedSNNSeparator | `sep_model_v10.py` | v7 stateless LIF (kept for reference) |
 | ConvDecoder | `sep_model_v10.py` | unchanged from v7 |
 | SNNTasNet constructor | `sep_model_v10.py` | snn_mode dispatch |
 | transfer_encoder_decoder | `sep_model_v10.py` | v7→v11 encoder+decoder copy |
-| PIT forward pass + loss | `two_speaker_train_v11.py` | pit_forward() |
+| PIT forward pass + loss | `two_speaker_train_v12.py` | pit_forward() |
 | ChunkedSNNSeparator (v7 original) | `sep_model_v7.py` | reference only |
 | SeparationLoss (8-ch legacy) | `sep_losses.py` | v3–v6 only |

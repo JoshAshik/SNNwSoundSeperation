@@ -109,12 +109,13 @@ Option (b) is safer because the optimizer has no stale momentum from 200 epochs 
 The EMA-shadow weights are preferred over raw model_state because val SI-SDRi was measured on
 them — they are the weights that actually produced +5.15 dB.
 
-Augmentation disabled for stage-2 because the model is already converged — augmentation helps
-generalisation during long training but hurts convergence quality during short fine-tuning of
-already-generalised weights. Three ablation runs isolate the effect:
-  A (control): dataset augment ON, gain_aug=0 → measures dataset augment contribution
-  B (priority): all augment OFF → expected best for converged weights
-  C: all augment OFF, lambda_spec=0.75 → tests if stronger spectral loss improves perceptual quality
+The completed ablation showed that dataset augmentation is mostly neutral for stage-2 fine-tuning
+of converged weights:
+  A: dataset augment ON, gain_aug=0, lambda_spec=0.5 → +5.46 dB
+  B: all augment OFF, lambda_spec=0.5 → +5.45 dB
+  C: all augment OFF, lambda_spec=0.75 → +5.20 dB
+Runs A and B are essentially tied and both improve about +0.3 dB over v11. Stronger spectral loss
+hurt, so keep the default `lambda_spec=0.5`. Best checkpoint: `checkpoints_v12a/best_2spk.pt`.
 
 **gain_aug_db = 3.0 not 6.0 (v10/v11)**
 v9 applied independent per-source ±6 dB gain augmentation in the training loop. Unknown at the time:

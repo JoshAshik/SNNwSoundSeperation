@@ -1,29 +1,36 @@
 # Training
 <!-- dependencies: two_speaker_train_v12.py (active), two_speaker_train_v11.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py -->
 
-## Current status (v12 — ACTIVE)
+## Current status (v12 — COMPLETE / ACTIVE BEST)
 
 ```
-Run:          v12 — Stage-2 fine-tune from v11 EMA-shadow weights
+Run:          v12 — Stage-2 fine-tune from v11 EMA-shadow weights, 3-run ablation complete
 Architecture: sep_model_v10.py  snn_mode=gru_stateful (unchanged from v11)
 Start ckpt:   checkpoints_v11/best_2spk.pt (full model warmstart, EMA-shadow preferred)
 Dataset:      Libri2Mix train-100 (13,900 pairs)
+Result:       best val SI-SDRi = +5.46 dB (Run A, checkpoints_v12a/best_2spk.pt)
+              vs v11 +5.15 dB: +0.31 dB improvement; train ~+6.2 dB, gap ~0.7 dB
 Key changes:  Warmstart (loads full EMA-shadow weights, resets optimizer/scheduler/epoch);
               lr=1e-5 (vs v11's 1.5e-4); freeze_epochs=0; gain_aug_db=0.0;
               --no_train_augment disables dataset-level spike_safe_augment;
-              3-run ablation: A (dataset augment ON), B (all augment OFF), C (lambda_spec=0.75)
+              completed 3-run ablation: A (dataset augment ON), B (all augment OFF),
+              C (lambda_spec=0.75)
 Eval:         eval_dataset.py — batch SI-SDRi on dev/test (--max_samples 50 for fast loop)
 SLURM:        slurm_v12_twospeaker.sh (self-resubmitting, 6h wall, 100 epochs)
-Target:       val SI-SDRi > +7.0 dB (stop criterion); stretch target +10.0 dB
+Takeaway:     Stage-2 warmstart works, but gains are modest; lambda_spec=0.5 remains best.
 ```
 
-### v12 ablation matrix
+### v12 ablation results
 
-| Run | Dataset augment | gain_aug_db | lambda_spec | Purpose |
-|-----|----------------|-------------|-------------|---------|
-| A (control) | ON | 0.0 | 0.5 | Isolate effect of disabling dataset augmentation |
-| B (priority) | OFF | 0.0 | 0.5 | No augmentation — expected best for converged weights |
-| C | OFF | 0.0 | 0.75 | Test if stronger spectral loss improves perceptual quality |
+| Run | Config | Best Val SI-SDRi | vs v11 (+5.15) | Takeaway |
+|-----|--------|------------------|---------------|----------|
+| A | `--train_augment` | **+5.46 dB** | **+0.31 dB** | Best checkpoint; dataset augmentation did not hurt stage-2 |
+| B | `--no_train_augment` | +5.45 dB | +0.30 dB | Essentially tied with A; all augment OFF is also viable |
+| C | `--no_train_augment --lambda_spec 0.75` | +5.20 dB | +0.05 dB | Stronger spectral loss hurt; keep `lambda_spec=0.5` |
+
+Dataset augmentation does not matter much for stage-2 fine-tuning of converged weights
+(A and B are separated by only 0.01 dB). Both default-loss runs improved about +0.3 dB over
+v11. Run C underperformed, so the default `lambda_spec=0.5` is preferred.
 
 ## Previous status (v11 — COMPLETE)
 
@@ -79,7 +86,7 @@ Resolved by:  v9 dropout reduced to 0.35
 
 ```
 Run:          v7 — Libri2Mix train-100, 200 epochs on ARC (~25h wall, multiple SLURM jobs)
-Result:       best val SI-SDRi = -1.16 dB  (ep~198)  — ALL-TIME BEST
+Result:       best val SI-SDRi = -1.16 dB  (ep~198)
 Final epoch:  ep200: train=+1.75 dB, val=-1.17 dB, gap=2.9 dB, spike=0.126, lr=1.01e-6
 Checkpoints:  checkpoints_v7/best_2spk.pt  (val=-1.16 dB)  — DO NOT OVERWRITE
 CSV log:      v7_train_log.csv (ARC: ~/SNNwSoundSeperation/)
@@ -144,12 +151,12 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | v4 | FSD50K | +3.76 dB | Recon error 5.1 (decoder weight amplification) |
 | v5 | FSD50K | +3.73 dB | Recon error 0.39, speaker collapse on imbalanced inputs |
 | v6 | FSD50K | +3.82 dB | Hissing artifact, FSD50K domain ceiling |
-| v7 | Libri2Mix | **-1.16 dB** (ALL-TIME BEST) | train +1.75 dB, gap 2.9 dB; LIF state resets every 0.1 s |
+| v7 | Libri2Mix | -1.16 dB | train +1.75 dB, gap 2.9 dB; LIF state resets every 0.1 s |
 | v8 | Libri2Mix | -1.65 dB | dropout 0.5 over-regularised; gap widened to 3.5 dB |
 | v9 | Libri2Mix | -2.48 dB | gain_aug ±6 dB double-applied (dataset + loop = ±12 dB); train collapsed to -1.27 dB |
 | v10 | Libri2Mix | CANCELLED | StatefulSNNSeparator: ~20 s/batch → 35,000 s/epoch |
-| v11 | Libri2Mix | **+5.15 dB** (ALL-TIME BEST) | StatefulGRUSeparator; gap 0.73 dB; LR bottomed at 1e-6 |
-| v12 | Libri2Mix | IN PROGRESS | Stage-2 fine-tune from v11 EMA; 3-run ablation (A/B/C) |
+| v11 | Libri2Mix | +5.15 dB | StatefulGRUSeparator; gap 0.73 dB; LR bottomed at 1e-6 |
+| v12 | Libri2Mix | **+5.46 dB** (ALL-TIME BEST) | Stage-2 warmstart from v11 EMA; A/B tied, lambda_spec=0.75 underperformed |
 
 ---
 
@@ -277,14 +284,16 @@ LOCAL:
   checkpoints_pretrain/best_pretrain.pt  — WHAM! encoder/decoder — DO NOT OVERWRITE
 
 ARC (~/SNNwSoundSeperation/):
-  checkpoints_v7/best_2spk.pt            — v7 best (val=-1.16 dB) — ALL-TIME BEST — DO NOT OVERWRITE
+  checkpoints_v7/best_2spk.pt            — v7 best (val=-1.16 dB) — DO NOT OVERWRITE
   checkpoints_v7/best_2spk_latest.pt     — v7 ep200 (training complete)
   checkpoints_v8/best_2spk.pt            — v8 best (val=-1.65 dB)
   checkpoints_v9/best_2spk.pt            — v9 best (val=-2.48 dB)
   checkpoints_v10/                       — empty (v10 cancelled at ~200 batches)
   checkpoints_v11/best_2spk.pt           — v11 best (val=+5.15 dB) — DO NOT OVERWRITE
   checkpoints_v11/best_2spk_latest.pt    — v11 ep200 (training complete)
-  checkpoints_v12/best_2spk.pt           — v12 best (IN PROGRESS)
+  checkpoints_v12a/best_2spk.pt          — v12 Run A best (val=+5.46 dB) — ALL-TIME BEST — DO NOT OVERWRITE
+  checkpoints_v12/best_2spk.pt           — v12 Run B best (val=+5.45 dB) — DO NOT OVERWRITE
+  checkpoints_v12c/best_2spk.pt          — v12 Run C best (val=+5.20 dB)
   checkpoints_v12/best_2spk_latest.pt    — v12 latest epoch
 ```
 
@@ -297,15 +306,15 @@ ARC (~/SNNwSoundSeperation/):
 - v8 (2-spk): `v8_train_log.csv` (ARC)
 - v9 (2-spk): `v9_train_log.csv` (ARC)
 - v11 (2-spk): `v11_train_log.csv` (ARC, complete)
-- v12 (2-spk): `v12_train_log.csv` (ARC, in progress — Run B)
-- v12a (2-spk): `v12a_train_log.csv` (ARC, Run A — control)
-- v12c (2-spk): `v12c_train_log.csv` (ARC, Run C — lambda_spec=0.75)
+- v12 (2-spk): `v12_train_log.csv` (ARC, Run B — complete, +5.45 dB)
+- v12a (2-spk): `v12a_train_log.csv` (ARC, Run A — complete, +5.46 dB)
+- v12c (2-spk): `v12c_train_log.csv` (ARC, Run C — complete, +5.20 dB)
 
 ---
 
 ## Commands
 
-### v12: Deploy to ARC and start Run B (PRIMARY)
+### v12: Deploy to ARC and rerun if needed
 ```bash
 # From Git Bash (Windows)
 scp -i "/c/Users/Josh Ashik/private_key.pem" \
@@ -340,12 +349,12 @@ squeue -u juashik
 
 ### v12: Evaluate a checkpoint
 ```bash
-python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+python3 eval_dataset.py --model checkpoints_v12a/best_2spk.pt \
     --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
-    --split dev --output_csv eval_dev_v12.csv
+    --split dev --output_csv eval_dev_v12a.csv
 
 # Fast dev50 for iteration:
-python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+python3 eval_dataset.py --model checkpoints_v12a/best_2spk.pt \
     --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
     --split dev --max_samples 50
 ```

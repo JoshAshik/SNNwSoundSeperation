@@ -7,13 +7,13 @@
 ```bash
 # Separate a mixture into two waveforms (v11/v12 checkpoint):
 python3 two_speaker_inference.py \
-    --model  checkpoints_v11/best_2spk.pt \
+    --model  checkpoints_v12a/best_2spk.pt \
     --input  mix.wav \
     --out_dir ./pit_output
 
 # With reference sources for SI-SDRi scoring:
 python3 two_speaker_inference.py \
-    --model  checkpoints_v12/best_2spk.pt \
+    --model  checkpoints_v12a/best_2spk.pt \
     --input  mix.wav \
     --ref1   source1.wav \
     --ref2   source2.wav \
@@ -21,7 +21,7 @@ python3 two_speaker_inference.py \
 
 # Also save a copy of the input mixture:
 python3 two_speaker_inference.py \
-    --model  checkpoints_v12/best_2spk.pt \
+    --model  checkpoints_v12a/best_2spk.pt \
     --input  mix.wav \
     --save_mixture
 ```
@@ -54,7 +54,7 @@ pit_output/
 
 ---
 
-## How the forward pass works (v11 — current)
+## How the forward pass works (v12 — current)
 
 ```
 Mixture (1, T)
@@ -94,12 +94,12 @@ Reports per-sample SI-SDRi with summary statistics (mean, median, std, worst-5).
 ### Usage
 ```bash
 # Full dev evaluation:
-python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+python3 eval_dataset.py --model checkpoints_v12a/best_2spk.pt \
     --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
     --split dev --output_csv eval_dev_v12.csv
 
 # Fast dev50 subset (for iteration during ablation):
-python3 eval_dataset.py --model checkpoints_v12/best_2spk.pt \
+python3 eval_dataset.py --model checkpoints_v12a/best_2spk.pt \
     --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
     --split dev --max_samples 50
 ```

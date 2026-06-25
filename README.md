@@ -34,13 +34,13 @@ U[t] ← U[t]·(1 - S[t])     # post-spike reset
 
 ## Project Evolution
 
-The project evolved through two tracks: an 8-channel fixed-category separator (v1–v2) and a 2-speaker permutation-invariant separator (v3–v11).
+The project evolved through two tracks: an 8-channel fixed-category separator (v1–v2) and a 2-speaker permutation-invariant separator (v3–v12).
 
 ### 8-Channel Track (v1–v2) — Shelved
 
 Fixed output channels for 8 sound categories (voice, animal, impacts, music, weather, alerts, domestic, tools). Trained on FSD50K. Peak: **+0.15 dB SI-SDRi**. Shelved due to channel collapse and spike saturation.
 
-### 2-Speaker Track (v3–v11) — Active
+### 2-Speaker Track (v3–v12) — Active
 
 | Version | Dataset | Architecture | Val SI-SDRi | Key Change |
 |---------|---------|-------------|-------------|------------|
@@ -52,7 +52,8 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 | v8 | Libri2Mix | ChunkedSNN + ConvDecoder | -1.65 dB | Dropout 0.5 over-regularised |
 | v9 | Libri2Mix | ChunkedSNN + ConvDecoder | -2.48 dB | Double-applied gain augmentation |
 | v10 | Libri2Mix | StatefulSNN | CANCELLED | 4000 CUDA dispatches/fwd — too slow |
-| **v11** | **Libri2Mix** | **StatefulGRU** | **In progress** | **cuDNN GRU with cross-chunk state** |
+| v11 | Libri2Mix | StatefulGRU | +5.15 dB | cuDNN GRU with cross-chunk state |
+| **v12** | **Libri2Mix** | **StatefulGRU** | **+5.46 dB** | **Stage-2 warmstart from v11; best Run A** |
 
 **Target:** val SI-SDRi > **+10 dB** (Conv-TasNet baseline on Libri2Mix: ~14 dB)
 
@@ -65,15 +66,15 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 
 ## File Structure
 
-### Active Pipeline (v11)
+### Active Pipeline (v12)
 
 | File | Purpose |
 |------|---------|
 | [`sep_model_v10.py`](sep_model_v10.py) | Model architecture — StatefulGRUSeparator, ConvDecoder, SNNTasNet |
-| [`two_speaker_train_v11.py`](two_speaker_train_v11.py) | Training loop with PIT loss, EMA, gain augmentation |
+| [`two_speaker_train_v12.py`](two_speaker_train_v12.py) | Stage-2 warmstart fine-tune with PIT loss, EMA, augmentation ablations |
 | [`librimix_dataset.py`](librimix_dataset.py) | Libri2Mix dataset loader with spike-safe augmentation |
 | [`two_speaker_inference.py`](two_speaker_inference.py) | Inference and SI-SDRi evaluation |
-| [`slurm_v11_twospeaker.sh`](slurm_v11_twospeaker.sh) | Self-resubmitting SLURM job for ARC cluster |
+| [`slurm_v12_twospeaker.sh`](slurm_v12_twospeaker.sh) | Self-resubmitting SLURM job for ARC cluster |
 
 ### Reference Versions
 
@@ -84,6 +85,7 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 | [`two_speaker_train_v8.py`](two_speaker_train_v8.py) | v8 | Dropout experiment (0.5 — over-regularised) |
 | [`two_speaker_train_v9.py`](two_speaker_train_v9.py) | v9 | Gain augmentation experiment (±6 dB — too aggressive) |
 | [`two_speaker_train_v10.py`](two_speaker_train_v10.py) | v10 | StatefulSNN attempt (too slow, cancelled) |
+| [`two_speaker_train_v11.py`](two_speaker_train_v11.py) | v11 | First completed StatefulGRU run (+5.15 dB) |
 | [`sep_model.py`](sep_model.py) | v3–v6 | Original architecture with single-layer decoder |
 | [`two_speaker_train.py`](two_speaker_train.py) | v3–v6 | FSD50K training loop |
 | [`two_speaker_dataset.py`](two_speaker_dataset.py) | v3–v6 | On-the-fly FSD50K 2-speaker mixer |
@@ -131,18 +133,17 @@ pip install torch torchaudio snntorch tensorboard pandas numpy mir_eval pesq
 
 ```bash
 # Deploy and run on NCSU ARC
-scp sep_model_v10.py two_speaker_train_v11.py slurm_v11_twospeaker.sh \
+scp sep_model_v10.py two_speaker_train_v12.py slurm_v12_twospeaker.sh \
     user@arc.csc.ncsu.edu:~/SNNwSoundSeperation/
 ssh arc.csc.ncsu.edu
-cd ~/SNNwSoundSeperation && sbatch slurm_v11_twospeaker.sh
+cd ~/SNNwSoundSeperation && sbatch slurm_v12_twospeaker.sh
 ```
 
 ## Inference
 
 ```bash
 python3 two_speaker_inference.py \
-    --checkpoint checkpoints_v11/best_2spk.pt \
-    --from_dataset \
-    --librimix_root /path/to/Libri2Mix/wav16k/max \
-    --n_samples 10
+    --model checkpoints_v12a/best_2spk.pt \
+    --input mix.wav \
+    --out_dir ./pit_output
 ```
