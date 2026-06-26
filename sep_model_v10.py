@@ -37,6 +37,7 @@ Weight transfer from v7:
 """
 
 from __future__ import annotations
+import math
 from typing import Dict, List, Tuple
 
 import torch
@@ -458,6 +459,116 @@ class StatefulGRUSeparator(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DPRNNSeparator  [v13 — Dual-Path RNN (Luo & Mesgarani 2020)]
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DPRNNBlock(nn.Module):
+    """Single dual-path block: intra-chunk BiLSTM + inter-chunk BiLSTM."""
+
+    def __init__(self, bn_dim: int, rnn_hidden: int, dropout: float = 0.0):
+        super().__init__()
+        self.intra_rnn  = nn.LSTM(bn_dim, rnn_hidden, 1, batch_first=True, bidirectional=True)
+        self.intra_proj = nn.Linear(rnn_hidden * 2, bn_dim)
+        self.intra_norm = nn.GroupNorm(1, bn_dim)
+
+        self.inter_rnn  = nn.LSTM(bn_dim, rnn_hidden, 1, batch_first=True, bidirectional=True)
+        self.inter_proj = nn.Linear(rnn_hidden * 2, bn_dim)
+        self.inter_norm = nn.GroupNorm(1, bn_dim)
+
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, D, K, S = x.shape
+
+        # intra-chunk: process each segment independently
+        intra_in = x.permute(0, 3, 2, 1).reshape(B * S, K, D)
+        intra_out, _ = self.intra_rnn(intra_in)
+        intra_out = self.dropout(self.intra_proj(intra_out))
+        intra_out = intra_out.reshape(B, S, K, D).permute(0, 3, 2, 1)
+        x = self.intra_norm(x + intra_out)
+
+        # inter-chunk: process across segments for each time position
+        inter_in = x.permute(0, 2, 3, 1).reshape(B * K, S, D)
+        inter_out, _ = self.inter_rnn(inter_in)
+        inter_out = self.dropout(self.inter_proj(inter_out))
+        inter_out = inter_out.reshape(B, K, S, D).permute(0, 3, 1, 2)
+        x = self.inter_norm(x + inter_out)
+
+        return x
+
+
+class DPRNNSeparator(nn.Module):
+    """
+    Dual-Path RNN separator (Luo & Mesgarani 2020).
+
+    Processes the full encoder output at once — no outer stateful loop.
+    Internal segmentation into overlapping chunks with 50% overlap.
+    Intra-chunk BiLSTM captures local time detail; inter-chunk BiLSTM
+    captures full-sequence context across all segments.
+    """
+
+    def __init__(self, n_filters: int, bn_dim: int = 64,
+                 rnn_hidden: int = 128, n_blocks: int = 6,
+                 n_speakers: int = 2, dropout: float = 0.0,
+                 chunk_size: int = 200):
+        super().__init__()
+        self.n_filters  = n_filters
+        self.n_speakers = n_speakers
+        self.chunk_size = chunk_size
+        self.hop_size   = chunk_size // 2
+
+        self.in_norm    = nn.GroupNorm(1, n_filters)
+        self.bottleneck = nn.Conv1d(n_filters, bn_dim, 1)
+        self.blocks     = nn.ModuleList(
+            [DPRNNBlock(bn_dim, rnn_hidden, dropout) for _ in range(n_blocks)]
+        )
+        self.out_proj   = nn.Conv1d(bn_dim, n_filters * n_speakers, 1)
+
+    def _overlap_add(self, x: torch.Tensor, L_orig: int) -> torch.Tensor:
+        """Reconstruct (B, D, S, K) → (B, D, L_orig) via overlap-add."""
+        B, D, S, K = x.shape
+        H = self.hop_size
+        L_pad = (S - 1) * H + K
+
+        output = x.new_zeros(B, D, L_pad)
+        count  = x.new_zeros(1, 1, L_pad)
+        for i in range(S):
+            start = i * H
+            output[:, :, start:start + K] += x[:, :, i, :]
+            count[:, :, start:start + K]  += 1.0
+        output = output / count.clamp(min=1.0)
+        return output[:, :, :L_orig]
+
+    def forward(self, enc: torch.Tensor) -> Tuple[torch.Tensor, List]:
+        B, N, L = enc.shape
+        K = self.chunk_size
+        H = self.hop_size
+
+        x = self.in_norm(enc)
+        x = self.bottleneck(x)
+
+        # segment into overlapping chunks
+        n_segs = math.ceil((L - K) / H) + 1 if L > K else 1
+        L_pad  = (n_segs - 1) * H + K
+        if L_pad > L:
+            x = F.pad(x, (0, L_pad - L))
+        x = x.unfold(-1, K, H)         # (B, bn_dim, S, K)
+        x = x.permute(0, 1, 3, 2)      # (B, bn_dim, K, S)
+
+        for block in self.blocks:
+            x = block(x)               # (B, bn_dim, K, S)
+
+        # overlap-add → (B, bn_dim, L)
+        x = x.permute(0, 1, 3, 2)      # (B, bn_dim, S, K)
+        x = self._overlap_add(x, L)
+
+        # project to masks
+        x = self.out_proj(x)            # (B, N*n_speakers, L)
+        masks = x.view(B, self.n_speakers, N, L).softmax(dim=1)
+        return masks, []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ConvDecoder  (unchanged from v7)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -492,7 +603,9 @@ class SNNTasNet(nn.Module):
     snn_mode options:
       'gru'          → ChunkedGRUSeparator    (bidirectional GRU, pre-training)
       'snn'          → ChunkedSNNSeparator    (stateless LIF, v7 behaviour)
-      'snn_stateful' → StatefulSNNSeparator   [NEW — v10 default]
+      'snn_stateful' → StatefulSNNSeparator   (v10)
+      'gru_stateful' → StatefulGRUSeparator   (v11/v12)
+      'dprnn'        → DPRNNSeparator         (v13 — Dual-Path RNN)
     """
 
     def __init__(
@@ -513,6 +626,8 @@ class SNNTasNet(nn.Module):
         use_weight_norm: bool  = False,
         decoder_refine:  int   = 3,
         decoder_groups:  int   = 8,
+        dprnn_bn_dim:    int   = 64,
+        dprnn_rnn_hidden: int  = 128,
     ):
         super().__init__()
         self.n_speakers      = n_speakers
@@ -545,6 +660,12 @@ class SNNTasNet(nn.Module):
         elif snn_mode == "gru_stateful":
             self.separator = StatefulGRUSeparator(
                 n_filters, hidden, n_layers, n_speakers, dropout, snn_chunk,
+            )
+        elif snn_mode == "dprnn":
+            self.separator = DPRNNSeparator(
+                n_filters, bn_dim=dprnn_bn_dim, rnn_hidden=dprnn_rnn_hidden,
+                n_blocks=n_layers, n_speakers=n_speakers,
+                dropout=dropout, chunk_size=snn_chunk,
             )
         else:  # "gru"
             self.separator = ChunkedGRUSeparator(

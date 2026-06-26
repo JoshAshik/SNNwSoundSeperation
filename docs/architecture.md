@@ -1,7 +1,39 @@
 # Architecture
 <!-- dependencies: sep_model_v10.py (active), sep_model_v7.py (v7 reference), sep_model.py (v3–v6 reference) -->
 
-## SNNTasNet model graph (v11 — ACTIVE, snn_mode="gru_stateful")
+## SNNTasNet model graph (v13 — ACTIVE, snn_mode="dprnn")
+
+```
+Input: (B, T)  — mono mixture, T=64000 (4s @ 16kHz)
+
+Encoder:   Conv1d(1→256, kernel=32, stride=16, ReLU)         [transferred from v12a best]
+           → (B, 256, L)  where L=3999 (ceil((T-k)/s)+1)
+           SpecAugment (training only): zero 2 random freq bands
+
+Separator: DPRNNSeparator  [snn_mode="dprnn"]                [NEW in v13]
+  1. GroupNorm(1, 256) + Conv1d(256→64, k=1)  — bottleneck to bn_dim=64
+  2. Pad L→L_pad, unfold(K=200, H=100)        — ~40 segments with 50% overlap
+  3. 6× DPRNNBlock:
+       Intra-chunk: (B*S, K, 64) → BiLSTM(64, 128) → Linear(256→64) → residual+GroupNorm
+       Inter-chunk: (B*K, S, 64) → BiLSTM(64, 128) → Linear(256→64) → residual+GroupNorm
+  4. Overlap-add reconstruct → (B, 64, L)
+  5. Conv1d(64→512, k=1) → view(B, 2, 256, L) → softmax(dim=1) → masks
+  spike_recs = []  (no LIF neurons)
+
+Decoder:   ConvDecoder  [transferred from v12a best — unchanged since v7]
+  - 3 × Conv1d(256,256,k=3)+GroupNorm(8,256)+PReLU
+  - ConvTranspose1d(256→1, k=32, s=16)
+  masked encoder features → refine → upsample → (B*2, 1, T') → reshape → (B, 2, T)
+
+Output: {"separated": (B, 2, T), "masks": (B, 2, 256, L), "spike_recs": []}
+```
+
+**Params:** ~3.2M total (2.6M separator, 0.6M encoder+decoder).
+**Speed:** No Python loop — full sequence processed at once via cuDNN BiLSTM. Expected ~1500–3000 s/epoch.
+
+---
+
+## SNNTasNet model graph (v11 — reference, snn_mode="gru_stateful")
 
 ```
 Input: (B, T)  — mono mixture, T=64000 (4s @ 16kHz)
@@ -33,6 +65,7 @@ Output: {"separated": (B, 2, T), "masks": (B, 2, 256, L), "spike_recs": []}
 
 **Speed:** 40 Python loop iterations per forward pass (one cuDNN GRU call each).
 Expected ~2000–4000 s/epoch. Compare: v10 LIF had 4000 Python-CUDA dispatches → ~35,000 s/epoch.
+Superseded by v13 DPRNNSeparator (no Python loop, all cuDNN).
 
 ---
 
@@ -222,6 +255,21 @@ SeparationLoss(
 
 ---
 
+## v13 config (sep_model_v10.py)
+
+```python
+# v13 (dprnn — ACTIVE):
+{"n_filters":256, "kernel_sz":32, "stride":16,
+ "hidden":128, "n_layers":6, "dropout":0.1,
+ "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
+ "decoder_refine":3, "decoder_groups":8, "use_weight_norm":False,
+ "dprnn_bn_dim":64, "dprnn_rnn_hidden":128}
+# starter: checkpoints_v12a/best_2spk.pt (encoder+decoder only; separator fresh)
+# params: ~3,241,536 total, ~2,633,024 separator
+```
+
+---
+
 ## v10/v11 config (sep_model_v10.py)
 
 ```python
@@ -283,7 +331,9 @@ so inference scripts rebuild the model correctly.
 
 | What | File | Notes |
 |---|---|---|
-| StatefulGRUSeparator | `sep_model_v10.py` | v11 active separator |
+| DPRNNBlock | `sep_model_v10.py` | v13 dual-path block (intra + inter chunk BiLSTM) |
+| DPRNNSeparator | `sep_model_v10.py` | v13 active separator |
+| StatefulGRUSeparator | `sep_model_v10.py` | v11/v12 separator (reference) |
 | StatefulSNNSeparator | `sep_model_v10.py` | v10 design (too slow) |
 | LIFResidualBlock (beta clamp) | `sep_model_v10.py` | shared with v7 |
 | ChunkedSNNSeparator | `sep_model_v10.py` | v7 stateless LIF (kept for reference) |

@@ -116,6 +116,35 @@ already-generalised weights. Three ablation runs isolate the effect:
   B (priority): all augment OFF → expected best for converged weights
   C: all augment OFF, lambda_spec=0.75 → tests if stronger spectral loss improves perceptual quality
 
+**v12 ablation conclusions**
+Three runs from v11 EMA-shadow weights (lr=1e-5, 100 epochs each):
+Run A (dataset augment ON) = +5.46 dB, Run B (all augment OFF) = +5.45 dB, Run C (lambda_spec=0.75) = +5.20 dB.
+Key findings: (1) Augmentation is neutral for stage-2 fine-tuning of converged weights — A and B tied.
+(2) Increasing lambda_spec from 0.5 to 0.75 degraded val by 0.25 dB — the default spectral weight is better.
+(3) Stage-2 warmstart gained +0.31 dB over v11 (+5.15 → +5.46). Modest but confirms the approach works.
+(4) The model is near its capacity ceiling — the remaining ~4.5 dB gap to +10 dB requires architectural changes
+(e.g. DPRNN/SepFormer separator, wider model, or more training data via train-360).
+
+**DPRNNSeparator replaces StatefulGRUSeparator (v13)**
+v12 ablation confirmed the GRU separator hit its capacity ceiling at ~+5.5 dB val SI-SDRi. Train
+SI-SDRi was only +6.1 dB — both training and validation were capped, so this is a model capacity
+problem, not overfitting. The remaining ~4.5 dB gap to the +10 dB target requires an architectural
+change, not more training or hyperparameter tuning.
+DPRNN (Dual-Path RNN) replaces the sequential GRU with alternating intra-chunk (fine temporal
+resolution) and inter-chunk (full-sequence context) BiLSTMs. The original DPRNN paper achieves ~18 dB
+SI-SDRi on WSJ0-2mix. Key design choices:
+  - bn_dim=64 bottleneck matches the paper; controls VRAM usage
+  - rnn_hidden=128 per direction (256 bidirectional output), projected back to bn_dim
+  - 6 blocks (reuses n_layers parameter)
+  - chunk_size=200 frames with 50% overlap (hop=100) → ~40 segments for L=3999
+  - No Python outer loop — cuDNN handles BiLSTM sequences internally → expected speedup vs v11
+  - 2.6M separator params (vs 9.3M GRU) — DPRNN's power is structural, not parameter count
+  - lr=5e-4 (fresh separator; conservative start vs paper's 1e-3 since we warmstart encoder)
+  - dropout=0.1 (light regularization; train-100 is only 13,900 utterances)
+Warmstart: encoder+decoder from v12a EMA shadow (the exact weights that achieved +5.46 dB).
+Separator keys filtered out — DPRNNSeparator is freshly initialised. Freeze phase (20 epochs)
+protects the transferred encoder from large gradients while the separator learns basic features.
+
 **gain_aug_db = 3.0 not 6.0 (v10/v11)**
 v9 applied independent per-source ±6 dB gain augmentation in the training loop. Unknown at the time:
 `librimix_dataset.py`'s `spike_safe_augment()` already applies a GLOBAL ±6 dB gain jitter (uniform
