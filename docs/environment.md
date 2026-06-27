@@ -5,13 +5,24 @@
 
 ```
 Host:     arc.csc.ncsu.edu  (login node)
-GPU:      RTX 4060 Ti 16GB  (partition: rtx4060ti16g)
+GPUs:     RTX 4060 Ti 16GB  (partition: rtx4060ti16g) — v7–v13
+          A100 40/80GB      (partition: a100, node c33) — v14+
 RAM:      192 GB per node
 Python:   /mnt/beegfs/juashik/.conda/envs/snn/bin/python
-Packages: torch 2.5.1+cu121, snntorch 0.9.4, torchaudio, tensorboard, pesq, mir_eval
-Data:     /mnt/beegfs/juashik/fsd50k/   (BeeGFS, ~54 GB)
+Packages: torch 2.5.1+cu121 (supports sm_50–sm_90), snntorch 0.9.4, torchaudio, tensorboard, pesq, mir_eval
+Data:     /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max/  (BeeGFS)
 Code:     ~/SNNwSoundSeperation/
 SSH key:  C:\Users\Josh Ashik\private_key.pem  (4096-bit RSA)
+```
+
+### GPU compatibility (torch 2.5.1+cu121)
+```
+Supported:     sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90
+  RTX 4060 Ti  → sm_89 (Ada Lovelace) — works via sm_86 compat
+  A100         → sm_80 — native support
+  H100         → sm_90 — native support
+NOT supported: sm_120 (Blackwell)
+  RTX 5060 Ti  → sm_120 — FAILS (tested: RuntimeError no kernel image)
 ```
 
 ### SSH config (C:\Users\Josh Ashik\.ssh\config)
@@ -41,7 +52,13 @@ Host c*
 | Home quota | 40 GB — code+checkpoints only; all data goes to BeeGFS |
 | Wall time | 6 hours per job — `run_train.slurm` self-resubmits at epoch < n_epochs |
 
-### Speed (v11 training — StatefulGRUSeparator)
+### Speed (v13 training — DPRNNSeparator, A100)
+```
+~160 s/epoch  (2.7 min; no Python loop, all cuDNN BiLSTM)
+~200 epochs in ~1 job  (A100; 200 × 160s ≈ 9h, needs 2 SLURM jobs)
+```
+
+### Speed (v11 training — StatefulGRUSeparator, rtx4060ti16g)
 ```
 ~2000–4000 s/epoch  (expected; 40 GRU kernel calls per forward pass)
 ~10–20 jobs for 200 epochs  (6h wall, self-resubmitting)

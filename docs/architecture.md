@@ -255,10 +255,25 @@ SeparationLoss(
 
 ---
 
+## v14 config (sep_model_v10.py)
+
+```python
+# v14 (dprnn wider — ACTIVE):
+{"n_filters":256, "kernel_sz":32, "stride":16,
+ "hidden":256, "n_layers":6, "dropout":0.1,
+ "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
+ "decoder_refine":3, "decoder_groups":8, "use_weight_norm":False,
+ "dprnn_bn_dim":64, "dprnn_rnn_hidden":256}
+# starter: checkpoints_v13/best_2spk.pt (encoder+decoder only; separator fresh)
+# batch_size=16 on A100
+```
+
+---
+
 ## v13 config (sep_model_v10.py)
 
 ```python
-# v13 (dprnn — ACTIVE):
+# v13 (dprnn — COMPLETE, val=+7.22 dB):
 {"n_filters":256, "kernel_sz":32, "stride":16,
  "hidden":128, "n_layers":6, "dropout":0.1,
  "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,

@@ -99,6 +99,19 @@ Matmul fusion (in _process_chunk) still active and provides the main speedup.
 
 ## Training
 
+**Wider DPRNN before stage-2 fine-tune (v14 over v15)**
+v13 reached +7.22 dB val SI-SDRi with rnn_hidden=128 and a 0.0 dB train-val gap at its peak. Small
+gap means the model is capacity-limited, not overfitting — widening the separator is more promising
+than stage-2 fine-tuning (which gained only +0.31 dB in v12). rnn_hidden doubled from 128→256:
+  - Original DPRNN paper uses 128 per direction; doubling tests if our encoder/decoder/data can exploit
+    more separator capacity
+  - Only one variable changed (hidden width) — keeps results interpretable
+  - batch_size increased 8→16 to exploit A100 VRAM headroom, which also stabilises gradients
+  - Warmstart from v13 (not v12a) — the encoder+decoder have spent 200 epochs co-adapting with
+    DPRNN-style masks and are better starting weights than the GRU-adapted v12a weights
+  - Separator keys filtered (shape changed with rnn_hidden); fresh initialisation
+Stage-2 fine-tune deferred to v15 after the wider model converges.
+
 **Stage-2 fine-tune with warmstart and augmentation ablation (v12)**
 v11 reached +5.15 dB val SI-SDRi at epoch 200 with LR bottomed at 1e-6. Plain `--resume` would
 flatline because cosine schedule hit its floor. Two alternative approaches:
