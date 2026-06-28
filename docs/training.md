@@ -1,7 +1,43 @@
 # Training
 <!-- dependencies: two_speaker_train_v14.py (active), two_speaker_train_v13.py (reference), two_speaker_train_v12.py (reference), two_speaker_train_v11.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py -->
 
-## Current status (v14 — ACTIVE)
+## Current status (v16 — ACTIVE)
+
+```
+Run:          v16 — dynamic mixing + speed perturbation ONLY (augmentation isolation test)
+Architecture: sep_model_v10.py  snn_mode=dprnn (DPRNNSeparator, rnn_hidden=128)
+Script:       two_speaker_train_v15.py (reused with flags: --no_train_augment --gain_aug_db 0)
+Start ckpt:   checkpoints_v13/best_2spk.pt (encoder+decoder from EMA shadow; separator fresh)
+Dataset:      DynamicMixDataset — on-the-fly random speaker pairing from Libri2Mix s1/+s2/ pool
+              speed perturbation 0.95–1.05x, relative SNR ±5 dB
+              spike_safe_augment DISABLED, per-source gain_aug DISABLED
+Key changes:  Isolates whether dynamic mixing helps without extra augmentation stack.
+              v15 showed full augmentation stack over-regularised (+6.64 dB < v13's +7.22 dB).
+              If v16 matches/exceeds v13, dynamic mixing is validated and next step is
+              wider bottleneck (dprnn_bn_dim=128). If it underperforms, SNR/speed settings
+              need tuning.
+Target:       > +10.0 dB val SI-SDRi (professor's target)
+Status:       Ready to deploy to ARC
+```
+
+## Previous status (v15 — COMPLETE)
+
+```
+Run:          v15 — dynamic clean mixing + speed perturbation (full augmentation stack)
+Architecture: sep_model_v10.py  snn_mode=dprnn (DPRNNSeparator, rnn_hidden=128, v13-sized)
+Start ckpt:   checkpoints_v13/best_2spk.pt (encoder+decoder from EMA shadow; separator fresh)
+Dataset:      DynamicMixDataset — on-the-fly random speaker pairing from s1/+s2/ pool
+              speed perturbation 0.95–1.05x, relative SNR ±5 dB, spike_safe_augment ON,
+              per-source gain_aug ±3 dB
+Key changes:  Dynamic mixing replaces fixed 13,900 Libri2Mix pairs with random combinations;
+              v13-sized DPRNN (rnn_hidden=128, bn_dim=64) since v14 wider didn't help;
+              combined augmentation stack proved too aggressive
+Result:       best val SI-SDRi = +6.64 dB (ep200), train +7.40 dB, gap 1.1 dB
+              Below v13's +7.22 dB — augmentation stack over-regularised
+Best ckpt:    checkpoints_v15/best_2spk.pt (val=+6.64 dB)
+```
+
+## Previous status (v14 — COMPLETE)
 
 ```
 Run:          v14 — wider DPRNN (rnn_hidden 128→256)
@@ -11,8 +47,9 @@ Dataset:      Libri2Mix train-100 (13,900 pairs)
 Key changes:  rnn_hidden doubled 128→256 (wider BiLSTM); batch_size=16 (A100 headroom);
               warmstart from v13 (not v12a — encoder co-adapted with DPRNN masks);
               separator keys filtered (shape changed); same lr/freeze/augment as v13
-Target:       > +10.0 dB val SI-SDRi (professor's target)
-Status:       Ready to deploy to ARC
+Result:       best val SI-SDRi = +7.21 dB (ep200), train +7.83 dB, gap 1.1 dB
+              No improvement over v13 — data diversity is the bottleneck, not model width
+Best ckpt:    checkpoints_v14/best_2spk.pt (val=+7.21 dB) — DO NOT OVERWRITE
 ```
 
 ## Previous status (v13 — COMPLETE)
@@ -182,7 +219,47 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | v11 | Libri2Mix | +5.15 dB | StatefulGRUSeparator; gap 0.73 dB; LR bottomed at 1e-6 |
 | v12 | Libri2Mix | +5.46 dB | Stage-2 fine-tune; A=+5.46, B=+5.45, C=+5.20; augmentation neutral |
 | v13 | Libri2Mix | **+7.22 dB** (ALL-TIME BEST) | DPRNN separator; +1.76 dB over v12; gap 0.0 dB; capacity ceiling |
-| v14 | Libri2Mix | ACTIVE | Wider DPRNN (rnn_hidden=256); warmstart from v13; target > +10 dB |
+| v14 | Libri2Mix | +7.21 dB | Wider DPRNN (rnn_hidden=256); no improvement over v13; data diversity bottleneck |
+| v15 | Libri2Mix (dynamic) | +6.64 dB | Dynamic mixing + speed perturb + full augment stack — over-regularised |
+| v16 | Libri2Mix (dynamic) | ACTIVE | Dynamic mixing + speed perturb ONLY (no extra augment) — isolation test |
+
+---
+
+## Hyperparameters (v16 — two_speaker_train_v15.py with flags)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| n_epochs | 200 | Full training run |
+| batch_size | 16 | A100 headroom |
+| clip_len | 64,000 | 4s @ 16kHz |
+| freeze_epochs | 20 | Separator only for first 20 epochs |
+| lr | 5e-4 | Fresh DPRNN separator |
+| lr_finetune | 5e-5 | Encoder+decoder LR after unfreeze |
+| weight_decay | 1e-4 | AdamW |
+| grad_clip | 5.0 | Global norm clip |
+| ema_decay | 0.999 | EMA weights used for val/inference |
+| val_every | 5 | Validation at epochs 5,10,15,… |
+| max_wall_hours | 5.75 | Exit before ARC 6h limit |
+| lambda_spec | 0.5 | Multi-resolution spectral L1 |
+| lambda_rate | 0.0 | DPRNN has no spikes |
+| lambda_recon | 5.0 | Reconstruction MSE |
+| gain_aug_db | **0.0** | **DISABLED** — dynamic mixing provides diversity |
+| train_augment | **False** | **DISABLED** — spike_safe_augment off |
+| speed_perturb | True | 0.95x–1.05x per source |
+| epoch_size | 13,900 | Virtual epoch size (matches train-100 pair count) |
+| snr_min_db / snr_max_db | -5.0 / +5.0 | Relative SNR between sources |
+| warmstart | checkpoints_v13/best_2spk.pt | Encoder+decoder from v13 EMA shadow |
+| dropout | 0.1 | Light regularization |
+| dprnn_bn_dim | 64 | Bottleneck dimension |
+| dprnn_rnn_hidden | 128 | v13-sized (v14 wider didn't help) |
+| snn_chunk | 200 | DPRNN internal chunk size |
+
+---
+
+## Hyperparameters (v15 DEFAULTS in two_speaker_train_v15.py)
+
+Same as v16 except: `gain_aug_db=3.0`, `train_augment=True` (both ON).
+Result: over-regularised, +6.64 dB < v13's +7.22 dB.
 
 ---
 
@@ -193,24 +270,12 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | n_epochs | 200 | Full training run |
 | batch_size | 16 | A100 — doubled from v13's 8 |
 | clip_len | 64,000 | 4s @ 16kHz |
-| freeze_epochs | 20 | Separator only for first 20 epochs |
-| lr | 5e-4 | Fresh wider DPRNN separator |
-| lr_finetune | 5e-5 | Encoder+decoder LR after unfreeze |
-| weight_decay | 1e-4 | AdamW |
-| grad_clip | 5.0 | Global norm clip |
-| ema_decay | 0.999 | EMA weights used for val/inference |
-| val_every | 5 | Validation at epochs 5,10,15,… |
-| max_wall_hours | 5.75 | Exit before ARC 6h limit |
-| lambda_spec | 0.5 | Multi-resolution spectral L1 |
-| lambda_rate | 0.0 | DPRNN has no spikes |
-| lambda_recon | 5.0 | Reconstruction MSE |
+| dprnn_rnn_hidden | 256 | Per-direction LSTM hidden size (was 128 in v13) |
 | gain_aug_db | 3.0 | Per-source gain augmentation |
 | train_augment | True | Dataset-level spike_safe_augment enabled |
 | warmstart | checkpoints_v13/best_2spk.pt | Encoder+decoder from v13 EMA shadow |
-| dropout | 0.1 | Light regularization |
-| dprnn_bn_dim | 64 | Bottleneck dimension |
-| dprnn_rnn_hidden | 256 | Per-direction LSTM hidden size (was 128 in v13) |
-| snn_chunk | 200 | DPRNN internal chunk size |
+| (other params same as v13) | | |
+Result: +7.21 dB — no improvement over v13. Wider rnn_hidden not the bottleneck.
 
 ---
 
@@ -296,11 +361,23 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | File | Role | Status |
 |---|---|---|
 | `sep_model_v10.py` | Architecture — DPRNNSeparator + StatefulGRUSeparator + StatefulSNNSeparator + ConvDecoder | Done |
-| `two_speaker_train_v14.py` | v14 training — wider DPRNN (rnn_hidden=256), warmstart from v13 | Done |
-| `slurm_v14_twospeaker.sh` | ARC SLURM script for v14 (A100, self-resubmitting, 6h wall, 200 epochs) | Done |
+| `two_speaker_train_v15.py` | v15/v16 training — dynamic mixing + speed perturbation (v13-sized DPRNN) | Done |
+| `dynamic_mix_dataset.py` | On-the-fly clean speech mixing with speed perturbation and SNR jitter | Done |
+| `slurm_v16_twospeaker.sh` | ARC SLURM script for v16 (dynamic mix, no extra augment, A100, 6h wall) | Done |
 | `eval_dataset.py` | Batch SI-SDRi evaluation on dev/test (--max_samples for dev50) | Done |
-| `librimix_dataset.py` | Libri2Mix reader (train_augment param for toggling augmentation) | Done |
-| `two_speaker_inference.py` | 2-speaker PIT inference (v11/v12/v13/v14 compatible via sep_model_v10) | Done |
+| `librimix_dataset.py` | Libri2Mix reader — used for val/test splits (train_augment param) | Done |
+| `two_speaker_inference.py` | 2-speaker PIT inference (v11–v16 compatible via sep_model_v10) | Done |
+
+### v15 pipeline (complete)
+| File | Role | Status |
+|---|---|---|
+| `slurm_v15_twospeaker.sh` | ARC SLURM script for v15 (full augment stack) | Complete |
+
+### v14 pipeline (complete)
+| File | Role | Status |
+|---|---|---|
+| `two_speaker_train_v14.py` | v14 training — wider DPRNN (rnn_hidden=256), warmstart from v13 | Complete |
+| `slurm_v14_twospeaker.sh` | ARC SLURM script for v14 | Complete |
 
 ### v13 pipeline (complete)
 | File | Role | Status |
@@ -377,6 +454,10 @@ ARC (~/SNNwSoundSeperation/):
   checkpoints_v12c/best_2spk_latest.pt   — v12 Run C ep100 (training complete)
   checkpoints_v13/best_2spk.pt           — v13 best (val=+7.22 dB) — ALL-TIME BEST — DO NOT OVERWRITE
   checkpoints_v13/best_2spk_latest.pt    — v13 ep200 (training complete)
+  checkpoints_v14/best_2spk.pt           — v14 best (val=+7.21 dB) — DO NOT OVERWRITE
+  checkpoints_v14/best_2spk_latest.pt    — v14 ep200 (training complete)
+  checkpoints_v15/best_2spk.pt           — v15 best (val=+6.64 dB)
+  checkpoints_v15/best_2spk_latest.pt    — v15 ep200 (training complete)
 ```
 
 ### CSV logs
@@ -392,31 +473,33 @@ ARC (~/SNNwSoundSeperation/):
 - v12a (2-spk): `v12a_train_log.csv` (ARC, complete — Run A, val=+5.46 dB, ALL-TIME BEST)
 - v12c (2-spk): `v12c_train_log.csv` (ARC, complete — Run C, val=+5.20 dB)
 - v13 (2-spk): `v13_train_log.csv` (ARC, complete — val=+7.22 dB, ALL-TIME BEST)
+- v14 (2-spk): `v14_train_log.csv` (ARC, complete — val=+7.21 dB, no improvement over v13)
+- v15 (2-spk): `v15_train_log.csv` (ARC, complete — val=+6.64 dB, over-regularised)
 
 ---
 
 ## Commands
 
-### v14: Deploy to ARC and start training (PRIMARY)
+### v16: Deploy to ARC and start training (PRIMARY)
 ```bash
 # From Git Bash (Windows)
 scp -i "/c/Users/Josh Ashik/private_key.pem" \
-  sep_model_v10.py two_speaker_train_v14.py slurm_v14_twospeaker.sh \
-  two_speaker_train_v13.py two_speaker_inference.py eval_dataset.py librimix_dataset.py CLAUDE.md \
+  sep_model_v10.py two_speaker_train_v15.py dynamic_mix_dataset.py slurm_v16_twospeaker.sh \
+  two_speaker_inference.py eval_dataset.py librimix_dataset.py CLAUDE.md \
   juashik@arc.csc.ncsu.edu:~/SNNwSoundSeperation/
 
 # On ARC (first time only)
-sed -i 's/\r//' slurm_v14_twospeaker.sh && mkdir -p checkpoints_v14 && sbatch slurm_v14_twospeaker.sh
+sed -i 's/\r//' slurm_v16_twospeaker.sh && mkdir -p checkpoints_v16 && sbatch slurm_v16_twospeaker.sh
 ```
 
-### v14: Evaluate a checkpoint
+### v16: Evaluate a checkpoint
 ```bash
-python3 eval_dataset.py --model checkpoints_v14/best_2spk.pt \
+python3 eval_dataset.py --model checkpoints_v16/best_2spk.pt \
     --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
-    --split dev --output_csv eval_dev_v14.csv
+    --split dev --output_csv eval_dev_v16.csv
 
 # Fast dev50 for iteration:
-python3 eval_dataset.py --model checkpoints_v13/best_2spk.pt \
+python3 eval_dataset.py --model checkpoints_v16/best_2spk.pt \
     --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
     --split dev --max_samples 50
 ```

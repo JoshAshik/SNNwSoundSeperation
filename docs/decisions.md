@@ -99,7 +99,7 @@ Matmul fusion (in _process_chunk) still active and provides the main speedup.
 
 ## Training
 
-**Wider DPRNN before stage-2 fine-tune (v14 over v15)**
+**Wider DPRNN (v14 — COMPLETE, no improvement)**
 v13 reached +7.22 dB val SI-SDRi with rnn_hidden=128 and a 0.0 dB train-val gap at its peak. Small
 gap means the model is capacity-limited, not overfitting — widening the separator is more promising
 than stage-2 fine-tuning (which gained only +0.31 dB in v12). rnn_hidden doubled from 128→256:
@@ -110,7 +110,31 @@ than stage-2 fine-tuning (which gained only +0.31 dB in v12). rnn_hidden doubled
   - Warmstart from v13 (not v12a) — the encoder+decoder have spent 200 epochs co-adapting with
     DPRNN-style masks and are better starting weights than the GRU-adapted v12a weights
   - Separator keys filtered (shape changed with rnn_hidden); fresh initialisation
-Stage-2 fine-tune deferred to v15 after the wider model converges.
+Result: +7.21 dB — essentially identical to v13. Wider rnn_hidden doesn't help while the data
+(13,900 fixed pairs) and bottleneck (bn_dim=64) stay the same. Data diversity is the bottleneck.
+
+**Dynamic mixing replaces fixed pairs (v15/v16)**
+v14 confirmed model width isn't the bottleneck with 13,900 fixed Libri2Mix pairs. The same
+speaker pairings every epoch limit generalisation — the model memorises pair-specific patterns.
+Dynamic mixing pools all clean utterances from s1/ + s2/ (27,800 files) and randomly pairs
+two each `__getitem__`. This gives effectively infinite training combinations per epoch.
+Additional diversity: speed perturbation (0.95–1.05x) and random relative SNR (±5 dB).
+v15 also kept spike_safe_augment + gain_aug_db=3.0 — too much augmentation stacking.
+Result: v15 = +6.64 dB, below v13's +7.22 dB. The full augmentation stack over-regularised.
+
+**Augmentation isolation test (v16)**
+v15 changed too many axes at once: dynamic mixing, speed perturbation, SNR jitter, spike_safe_augment,
+and gain_aug_db. To isolate whether dynamic mixing itself helps, v16 disables the extra augmentations
+(--no_train_augment --gain_aug_db 0) and keeps only dynamic mixing + speed perturbation. If v16
+matches or exceeds v13, dynamic mixing is validated and next step is wider bottleneck (bn_dim=128).
+If it still underperforms, the SNR range or speed perturbation settings need tuning.
+
+**Speed perturbation: F.interpolate not torchaudio.resample (v15 fix)**
+Original implementation used `torchaudio.functional.resample` (sinc interpolation) — computed a
+polyphase filter on every call, causing ~33x slowdown (670s/100 batches vs 20s). Replaced with
+`F.interpolate(mode="linear")` which is a simple tensor resize. For augmentation (introducing
+variation, not high-fidelity audio processing), linear interpolation is sufficient and adds
+negligible cost. See bugs.md #31.
 
 **Stage-2 fine-tune with warmstart and augmentation ablation (v12)**
 v11 reached +5.15 dB val SI-SDRi at epoch 200 with LR bottomed at 1e-6. Plain `--resume` would

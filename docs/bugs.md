@@ -75,6 +75,12 @@
 | 29 | StatefulSNNSeparator: ~20 s/batch observed on ARC (expected 3-5 s). Root cause: 40 outer (chunks) × 100 inner (LIF time steps) × 6 layers = 24,000 Python function calls per forward pass on batch=8. GPU idle between each Python dispatch. v7 processed B×80=640 samples per inner iteration — 80× more GPU work per Python call. At 20 s/batch × 1,737 batches = ~35,000 s/epoch. Job cancelled. | Replaced StatefulSNNSeparator with StatefulGRUSeparator in v11. cuDNN GRU processes full (B, 100, 256) chunk in one fused kernel. Only 40 Python iterations remain (outer chunk loop). | `sep_model_v10.py`, `two_speaker_train_v11.py` |
 | 30 | `rate_t` device mismatch when `spike_recs=[]` (GRU returns no spikes). `_spike_rate_loss([])` returns `torch.tensor(0.0)` on CPU. Adding CPU tensor to CUDA `si_sdr_loss` raises RuntimeError. | Changed `rate_t` assignment to `.to(si_sdr_loss.device)` in `pit_forward`. | `two_speaker_train_v11.py` |
 
+## Fixed — v15 speed perturbation (2026-06-27)
+
+| # | Symptom | Fix | File |
+|---|---|---|---|
+| 31 | `torchaudio.functional.resample` (sinc interpolation) in `_speed_perturb()` took ~670s per 100 batches — 33x slower than v14's 20s/100 batches. Total epoch time: ~5700s vs expected ~120s. The sinc resampler computes a polyphase filter on every call. | Replaced with `F.interpolate(mode="linear")` — simple tensor resize, negligible cost. Linear interpolation is sufficient for augmentation (introducing variation, not high-fidelity playback). | `dynamic_mix_dataset.py` |
+
 ---
 
 ## Remaining / future

@@ -255,10 +255,27 @@ SeparationLoss(
 
 ---
 
+## v15/v16 config (sep_model_v10.py)
+
+```python
+# v15/v16 (dprnn v13-sized + dynamic mixing — ACTIVE):
+{"n_filters":256, "kernel_sz":32, "stride":16,
+ "hidden":128, "n_layers":6, "dropout":0.1,
+ "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
+ "decoder_refine":3, "decoder_groups":8, "use_weight_norm":False,
+ "dprnn_bn_dim":64, "dprnn_rnn_hidden":128}
+# Same architecture as v13 — v14 wider (rnn_hidden=256) didn't help
+# starter: checkpoints_v13/best_2spk.pt (encoder+decoder only; separator fresh)
+# v15 result: +6.64 dB (full augment stack over-regularised)
+# v16: same arch, dynamic mix + speed perturb only (no extra augment)
+```
+
+---
+
 ## v14 config (sep_model_v10.py)
 
 ```python
-# v14 (dprnn wider — ACTIVE):
+# v14 (dprnn wider — COMPLETE, val=+7.21 dB):
 {"n_filters":256, "kernel_sz":32, "stride":16,
  "hidden":256, "n_layers":6, "dropout":0.1,
  "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
@@ -266,6 +283,7 @@ SeparationLoss(
  "dprnn_bn_dim":64, "dprnn_rnn_hidden":256}
 # starter: checkpoints_v13/best_2spk.pt (encoder+decoder only; separator fresh)
 # batch_size=16 on A100
+# No improvement over v13 — data diversity is the bottleneck, not model width
 ```
 
 ---

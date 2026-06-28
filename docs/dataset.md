@@ -1,5 +1,5 @@
 # Dataset
-<!-- dependencies: librimix_dataset.py (active), fsd50k_dataset.py (v3–v6), sep_dataset.py, config.py -->
+<!-- dependencies: dynamic_mix_dataset.py (v15/v16 active), librimix_dataset.py (val/test + v7–v14 train), fsd50k_dataset.py (v3–v6), sep_dataset.py, config.py -->
 
 ---
 
@@ -49,6 +49,58 @@ this is separate from the per-source gain augmentation in the training script (`
 can be independently controlled.
 
 Smoke test: `python3 librimix_dataset.py <librimix_root>`.
+
+---
+
+## Dynamic mixing (v15/v16 — ACTIVE)
+
+On-the-fly random speaker pairing from clean utterances, replacing fixed pre-generated mixtures.
+Defined in `dynamic_mix_dataset.py`. Used for training only — validation still uses `LibriMixDataset`
+(pre-generated pairs from `dev/`) for fair comparison across versions.
+
+### How it works
+
+1. **Pool**: scans all `.wav` files in `s1/` and `s2/` of the train split (27,800 files for train-100)
+2. **Sample**: each `__getitem__` randomly picks 2 utterances from the pool
+3. **Speed perturb**: independently resample each source at 0.95x–1.05x (via `F.interpolate` linear)
+4. **Crop/pad**: random-crop or tile-pad each source independently to `clip_len`
+5. **SNR jitter**: apply random relative gain (default ±5 dB) to one source
+6. **Sum**: `mixture = s1 + s2` (by construction)
+7. **Peak-normalise**: using mixture peak (uniform scale to all three)
+8. **Augment**: optional `spike_safe_augment` (disabled in v16, enabled in v15)
+
+This gives effectively infinite training combinations per epoch vs 13,900 fixed pairs.
+
+### Parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `epoch_size` | 13,900 | Virtual items per epoch (matches train-100 pair count) |
+| `speed_perturb` | True | 0.95x–1.05x via linear interpolation |
+| `snr_range_db` | (-5.0, 5.0) | Relative gain between sources |
+| `augment` | True | spike_safe_augment (v16 disables this) |
+
+### v15 vs v16 augmentation
+
+| Augmentation layer | v15 | v16 |
+|---|---|---|
+| Dynamic random speaker pairing | ON | ON |
+| Speed perturbation 0.95–1.05x | ON | ON |
+| Random relative SNR ±5 dB | ON | ON |
+| spike_safe_augment (polarity, shift, noise, taper) | ON | **OFF** |
+| Per-source gain_aug ±3 dB | ON | **OFF** |
+
+v15 result: +6.64 dB (below v13's +7.22 dB) — the full stack over-regularised.
+v16 tests whether dynamic mixing helps when it's the only source of diversity.
+
+### Speed perturbation implementation
+
+Originally used `torchaudio.functional.resample` (sinc interpolation), which was ~33x slower
+(670s/100 batches vs 20s). Replaced with `F.interpolate(mode="linear")` — negligible cost.
+For augmentation purposes (introducing variation, not high-fidelity playback), linear interpolation
+is sufficient. See bugs.md #31.
+
+Smoke test: `python3 dynamic_mix_dataset.py <librimix_root>`.
 
 ### Why Libri2Mix instead of FSD50K
 FSD50K is environmental noise (impacts, weather, alerts). The academic 10 dB SI-SDRi target is defined on clean speech separation (Libri2Mix). Domain mismatch was the primary ceiling for v3–v6. See decisions.md for full rationale.

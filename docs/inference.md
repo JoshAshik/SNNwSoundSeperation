@@ -153,7 +153,7 @@ model automatically. No manual arch flags needed.
 
 | Script | n_speakers | Checkpoint |
 |---|---|---|
-| `two_speaker_inference.py` | 2 | Trained with `n_speakers=2` |
+| `two_speaker_inference.py` | 2 | v11–v16 checkpoints (trained with `n_speakers=2`) |
 | `sep_inference.py` | 8 | `best_snn_v2.pt`, `best_snn_v1_gru_ep696.pt` |
 
 Loading an 8-speaker checkpoint in `two_speaker_inference.py` will print a
