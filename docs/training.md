@@ -1,23 +1,49 @@
 # Training
-<!-- dependencies: two_speaker_train_v14.py (active), two_speaker_train_v13.py (reference), two_speaker_train_v12.py (reference), two_speaker_train_v11.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py -->
+<!-- dependencies: two_speaker_train_v17.py (active), two_speaker_train_v15.py (v15/v16 reference), two_speaker_train_v14.py (reference), two_speaker_train_v13.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py, oracle_mask_diagnostic.py -->
 
-## Current status (v16 — ACTIVE)
+## Current status (v17 — ACTIVE)
+
+```
+Run:          v17 — finer encoder (k=16, s=8) FROM SCRATCH + reference DPRNN recipe
+Architecture: sep_model_v10.py  snn_mode=dprnn (DPRNNSeparator, rnn_hidden=128, bn_dim=64)
+Script:       two_speaker_train_v17.py
+Start ckpt:   NONE — trained end-to-end from scratch (no warmstart, no freeze)
+Dataset:      LibriMixDataset — fixed REAL Libri2Mix train-100 pairs (dynamic mixing dropped),
+              augmentation OFF (gain_aug=0, train_augment=False)
+Key changes:  Single coherent hypothesis — the front-end/loss/schedule were the ceiling, not
+              separator capacity or data augmentation (gap≈0 through v13–v16 → underfitting).
+                A/D  encoder kernel 32→16, stride 16→8 (~2x frames, ~8000 for a 4s clip).
+                     Changing the conv shape makes v13 encoder weights non-transferable, so the
+                     whole net trains from scratch with no freeze phase.
+                B    pure SI-SDR loss: lambda_recon 5.0→0, lambda_spec 0.5→0.1, lambda_rate=0.
+                     Aligns the optimised objective with the reported metric; drops the
+                     scale-dependent recon term that dominated the old loss.
+                C    fixed real train-100 mixtures (no dynamic mixing — diverged from eval in
+                     v15/v16); augmentation off (model underfits, not overfits).
+                E    Adam lr=1e-3 + ReduceLROnPlateau (halve, patience 4 val-checks, ABS 0.01 dB
+                     threshold), grad clip 5. Replaces cosine-to-1e-6 + 5e-5 enc/dec fine-tune.
+              batch_size=8 (stride-8 doubles activations vs v16's stride-16 batch 16).
+Gate:         oracle_mask_diagnostic.py — confirm 16:8 STFT-oracle beats 32:16 by >~1 dB on dev
+              BEFORE committing the A100 run (bounds the finer front-end's headroom).
+Held later:   dprnn_bn_dim 64→128 capacity; train-360 (not yet generated on BeeGFS).
+Target:       > +10.0 dB val SI-SDRi (professor's target); bar to beat = v13's +7.22 dB.
+Status:       Training on ARC (job 242617, from scratch, self-resubmitting)
+```
+
+## Previous status (v16 — COMPLETE)
 
 ```
 Run:          v16 — dynamic mixing + speed perturbation ONLY (augmentation isolation test)
 Architecture: sep_model_v10.py  snn_mode=dprnn (DPRNNSeparator, rnn_hidden=128)
 Script:       two_speaker_train_v15.py (reused with flags: --no_train_augment --gain_aug_db 0)
 Start ckpt:   checkpoints_v13/best_2spk.pt (encoder+decoder from EMA shadow; separator fresh)
-Dataset:      DynamicMixDataset — on-the-fly random speaker pairing from Libri2Mix s1/+s2/ pool
-              speed perturbation 0.95–1.05x, relative SNR ±5 dB
-              spike_safe_augment DISABLED, per-source gain_aug DISABLED
-Key changes:  Isolates whether dynamic mixing helps without extra augmentation stack.
-              v15 showed full augmentation stack over-regularised (+6.64 dB < v13's +7.22 dB).
-              If v16 matches/exceeds v13, dynamic mixing is validated and next step is
-              wider bottleneck (dprnn_bn_dim=128). If it underperforms, SNR/speed settings
-              need tuning.
-Target:       > +10.0 dB val SI-SDRi (professor's target)
-Status:       Ready to deploy to ARC
+Dataset:      DynamicMixDataset — on-the-fly random speaker pairing, speed perturb 0.95–1.05x,
+              relative SNR ±5 dB; spike_safe_augment + per-source gain_aug DISABLED
+Result:       best val SI-SDRi = +6.79 dB (ep200), train +8.09 dB, gap +1.3 dB
+              Still below v13's +7.22 dB even with augmentation stripped to the minimum —
+              confirms dynamic mixing itself diverges from the fixed-mixture eval distribution.
+              Motivates v17's return to fixed real mixtures.
+Best ckpt:    checkpoints_v16/best_2spk.pt (val=+6.79 dB) — DO NOT OVERWRITE
 ```
 
 ## Previous status (v15 — COMPLETE)
@@ -221,7 +247,39 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | v13 | Libri2Mix | **+7.22 dB** (ALL-TIME BEST) | DPRNN separator; +1.76 dB over v12; gap 0.0 dB; capacity ceiling |
 | v14 | Libri2Mix | +7.21 dB | Wider DPRNN (rnn_hidden=256); no improvement over v13; data diversity bottleneck |
 | v15 | Libri2Mix (dynamic) | +6.64 dB | Dynamic mixing + speed perturb + full augment stack — over-regularised |
-| v16 | Libri2Mix (dynamic) | ACTIVE | Dynamic mixing + speed perturb ONLY (no extra augment) — isolation test |
+| v16 | Libri2Mix (dynamic) | +6.79 dB | Dynamic mixing + speed perturb ONLY — still < v13; dynamic mixing diverges from eval |
+| v17 | Libri2Mix (fixed) | ACTIVE | Finer encoder k=16/s=8 from scratch + pure SI-SDR loss + plateau LR; fixed real mixtures |
+
+---
+
+## Hyperparameters (v17 DEFAULTS in two_speaker_train_v17.py)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| n_epochs | 200 | Full training run |
+| batch_size | 8 | Stride-8 doubles activations vs v16's batch 16 |
+| clip_len | 64,000 | 4s @ 16kHz |
+| **kernel_sz** | **16** | **Encoder kernel — was 32 (Experiment A)** |
+| **stride** | **8** | **Encoder stride — was 16 → ~8000 frames/4s clip** |
+| freeze_epochs | **0** | From scratch — no encoder/decoder to protect |
+| warmstart | **NONE** | Trained end-to-end from scratch |
+| lr | **1e-3** | Fresh front-end needs a real LR (was 5e-4 + 5e-5) |
+| scheduler | **ReduceLROnPlateau** | mode=max, factor=0.5, patience=4 val-checks, ABS 0.01 dB threshold |
+| min_lr | 1e-6 | Plateau floor |
+| weight_decay | 0.0 | Adam (not AdamW) |
+| grad_clip | 5.0 | Global norm clip |
+| ema_decay | 0.999 | EMA weights used for val/inference |
+| val_every | 5 | Validation at epochs 5,10,15,… |
+| max_wall_hours | 5.75 | Exit before ARC 6h limit |
+| **lambda_spec** | **0.1** | **Small perceptual term — was 0.5 (Experiment B)** |
+| lambda_rate | 0.0 | DPRNN has no spikes |
+| **lambda_recon** | **0.0** | **Pure SI-SDR — removed scale-dependent recon (was 5.0)** |
+| gain_aug_db | 0.0 | Per-source gain aug off |
+| train_augment | False | Dataset spike_safe_augment off (underfitting) |
+| dropout | 0.1 | Light regularization |
+| dprnn_bn_dim | 64 | Bottleneck (capacity 64→128 held for later) |
+| dprnn_rnn_hidden | 128 | v13-sized |
+| snn_chunk | 200 | DPRNN internal chunk (~sqrt(2·frames) at stride 8) |
 
 ---
 
@@ -253,6 +311,8 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | dprnn_bn_dim | 64 | Bottleneck dimension |
 | dprnn_rnn_hidden | 128 | v13-sized (v14 wider didn't help) |
 | snn_chunk | 200 | DPRNN internal chunk size |
+
+Result: +6.79 dB — dynamic mixing still below v13.
 
 ---
 
@@ -361,16 +421,20 @@ Result: +7.21 dB — no improvement over v13. Wider rnn_hidden not the bottlenec
 | File | Role | Status |
 |---|---|---|
 | `sep_model_v10.py` | Architecture — DPRNNSeparator + StatefulGRUSeparator + StatefulSNNSeparator + ConvDecoder | Done |
-| `two_speaker_train_v15.py` | v15/v16 training — dynamic mixing + speed perturbation (v13-sized DPRNN) | Done |
-| `dynamic_mix_dataset.py` | On-the-fly clean speech mixing with speed perturbation and SNR jitter | Done |
-| `slurm_v16_twospeaker.sh` | ARC SLURM script for v16 (dynamic mix, no extra augment, A100, 6h wall) | Done |
+| `two_speaker_train_v17.py` | v17 training — finer encoder (k=16,s=8) from scratch, pure SI-SDR loss, plateau LR, fixed real train-100 | Done |
+| `oracle_mask_diagnostic.py` | STFT oracle-mask (IRM/IBM) SI-SDRi ceiling per front-end window — v17 gate (no model/training) | Done |
+| `slurm_v17_twospeaker.sh` | ARC SLURM script for v17 (from scratch, batch 8, A100, 6h wall, self-resubmit) | Done |
+| `smoke_test_v17.py` | End-to-end smoke test — synthesises tiny Libri2Mix, runs train/resume/oracle to exit 0 | Done |
+| `librimix_dataset.py` | Libri2Mix reader — train (v17) + val/test (train_augment param) | Done |
 | `eval_dataset.py` | Batch SI-SDRi evaluation on dev/test (--max_samples for dev50) | Done |
-| `librimix_dataset.py` | Libri2Mix reader — used for val/test splits (train_augment param) | Done |
-| `two_speaker_inference.py` | 2-speaker PIT inference (v11–v16 compatible via sep_model_v10) | Done |
+| `two_speaker_inference.py` | 2-speaker PIT inference (v11–v17 compatible via sep_model_v10) | Done |
 
-### v15 pipeline (complete)
+### v15/v16 pipeline (complete — reference)
 | File | Role | Status |
 |---|---|---|
+| `two_speaker_train_v15.py` | v15/v16 training — dynamic mixing + speed perturbation (v13-sized DPRNN) | Complete |
+| `dynamic_mix_dataset.py` | On-the-fly clean speech mixing — dropped in v17 (diverged from eval) | Complete |
+| `slurm_v16_twospeaker.sh` | ARC SLURM script for v16 (dynamic mix, no extra augment) | Complete |
 | `slurm_v15_twospeaker.sh` | ARC SLURM script for v15 (full augment stack) | Complete |
 
 ### v14 pipeline (complete)
@@ -458,6 +522,10 @@ ARC (~/SNNwSoundSeperation/):
   checkpoints_v14/best_2spk_latest.pt    — v14 ep200 (training complete)
   checkpoints_v15/best_2spk.pt           — v15 best (val=+6.64 dB)
   checkpoints_v15/best_2spk_latest.pt    — v15 ep200 (training complete)
+  checkpoints_v16/best_2spk.pt           — v16 best (val=+6.79 dB) — DO NOT OVERWRITE
+  checkpoints_v16/best_2spk_latest.pt    — v16 ep200 (training complete)
+  checkpoints_v17/best_2spk.pt           — v17 best (finer encoder from scratch) — IN PROGRESS
+  checkpoints_v17/best_2spk_latest.pt    — v17 latest (self-resubmit resume point)
 ```
 
 ### CSV logs
@@ -475,12 +543,45 @@ ARC (~/SNNwSoundSeperation/):
 - v13 (2-spk): `v13_train_log.csv` (ARC, complete — val=+7.22 dB, ALL-TIME BEST)
 - v14 (2-spk): `v14_train_log.csv` (ARC, complete — val=+7.21 dB, no improvement over v13)
 - v15 (2-spk): `v15_train_log.csv` (ARC, complete — val=+6.64 dB, over-regularised)
+- v16 (2-spk): `v16_train_log.csv` (ARC, complete — val=+6.79 dB, dynamic mixing diverges)
+- v17 (2-spk): `v17_train_log.csv` (ARC, in progress — finer encoder from scratch)
 
 ---
 
 ## Commands
 
-### v16: Deploy to ARC and start training (PRIMARY)
+### v17: Deploy to ARC and start training (PRIMARY)
+```bash
+# From Git Bash (Windows)
+scp -i "/c/Users/Josh Ashik/private_key.pem" \
+  sep_model_v10.py two_speaker_train_v17.py slurm_v17_twospeaker.sh oracle_mask_diagnostic.py \
+  smoke_test_v17.py librimix_dataset.py eval_dataset.py two_speaker_inference.py CLAUDE.md \
+  juashik@arc.csc.ncsu.edu:~/SNNwSoundSeperation/
+
+# On ARC — GATE FIRST (use the conda python; login-node python3 has no torch)
+sed -i 's/\r//' slurm_v17_twospeaker.sh
+/mnt/beegfs/juashik/.conda/envs/snn/bin/python oracle_mask_diagnostic.py \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --max_samples 300 --output_csv oracle_dev_v17.csv
+# Proceed only if 16:8 oracle beats 32:16 by >~1 dB.
+
+# Then launch training
+mkdir -p checkpoints_v17 && sbatch slurm_v17_twospeaker.sh
+```
+
+### v17: Evaluate a checkpoint
+```bash
+python3 eval_dataset.py --model checkpoints_v17/best_2spk.pt \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --output_csv eval_dev_v17.csv
+
+# Fast dev50 for iteration:
+python3 eval_dataset.py --model checkpoints_v17/best_2spk.pt \
+    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
+    --split dev --max_samples 50
+```
+
+### v16: Deploy to ARC and start training (legacy)
 ```bash
 # From Git Bash (Windows)
 scp -i "/c/Users/Josh Ashik/private_key.pem" \
@@ -490,18 +591,6 @@ scp -i "/c/Users/Josh Ashik/private_key.pem" \
 
 # On ARC (first time only)
 sed -i 's/\r//' slurm_v16_twospeaker.sh && mkdir -p checkpoints_v16 && sbatch slurm_v16_twospeaker.sh
-```
-
-### v16: Evaluate a checkpoint
-```bash
-python3 eval_dataset.py --model checkpoints_v16/best_2spk.pt \
-    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
-    --split dev --output_csv eval_dev_v16.csv
-
-# Fast dev50 for iteration:
-python3 eval_dataset.py --model checkpoints_v16/best_2spk.pt \
-    --librimix_root /mnt/beegfs/juashik/librimix/Libri2Mix/wav16k/max \
-    --split dev --max_samples 50
 ```
 
 ### v12: Deploy to ARC and start Run B (legacy)

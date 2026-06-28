@@ -1,9 +1,14 @@
 # Dataset
-<!-- dependencies: dynamic_mix_dataset.py (v15/v16 active), librimix_dataset.py (val/test + v7–v14 train), fsd50k_dataset.py (v3–v6), sep_dataset.py, config.py -->
+<!-- dependencies: librimix_dataset.py (v17 train + all val/test), dynamic_mix_dataset.py (v15/v16 reference), fsd50k_dataset.py (v3–v6), sep_dataset.py, config.py -->
+
+> **v17 data regime:** back to **fixed real Libri2Mix train-100** via `LibriMixDataset`, with
+> augmentation OFF. Dynamic mixing (v15/v16) is dropped — it diverged from the fixed-mixture eval
+> distribution (v16 = +6.79 dB < v13 = +7.22 dB). The model underfits (gap≈0), so the fix is a
+> finer encoder + pure-SI-SDR loss, not more data augmentation. See [training.md](training.md).
 
 ---
 
-## Libri2Mix (v7 — ACTIVE)
+## Libri2Mix (v7–v14, v17 — ACTIVE for training; all versions for val/test)
 
 Pre-generated 2-speaker clean speech mixtures from LibriSpeech. Academic standard benchmark for blind source separation.
 
@@ -44,19 +49,26 @@ cosine taper) during training when `augment=True`.
 
 `build_librimix_dataloaders()` accepts a `train_augment` parameter (default: `True`). Setting
 `train_augment=False` disables all dataset-level augmentation for the training split. This is used
-by v12 stage-2 fine-tuning (`--no_train_augment`) to avoid perturbing converged weights. Note that
-this is separate from the per-source gain augmentation in the training script (`gain_aug_db`) — both
-can be independently controlled.
+by v12 stage-2 fine-tuning and by **v17** (`--no_train_augment`, the default in
+`two_speaker_train_v17.py`) — v17 trains on clean fixed mixtures with no augmentation because the
+model underfits. Note that this is separate from the per-source gain augmentation in the training
+script (`gain_aug_db`, also 0 in v17) — both can be independently controlled.
 
 Smoke test: `python3 librimix_dataset.py <librimix_root>`.
 
 ---
 
-## Dynamic mixing (v15/v16 — ACTIVE)
+## Dynamic mixing (v15/v16 — COMPLETE, dropped in v17)
 
 On-the-fly random speaker pairing from clean utterances, replacing fixed pre-generated mixtures.
 Defined in `dynamic_mix_dataset.py`. Used for training only — validation still uses `LibriMixDataset`
 (pre-generated pairs from `dev/`) for fair comparison across versions.
+
+> **Dropped in v17.** v15 (+6.64 dB) and v16 (+6.79 dB) both landed below v13's +7.22 dB even with
+> augmentation stripped to the minimum. The on-the-fly random pairings, speed perturbation, and SNR
+> jitter create a training distribution that diverges from the fixed real-mixture dev/test sets, and
+> since the model underfits (gap≈0) the extra diversity hurts rather than helps. v17 returns to fixed
+> `LibriMixDataset` train-100. This section is retained for reference.
 
 ### How it works
 

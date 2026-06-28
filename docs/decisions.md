@@ -129,6 +129,50 @@ and gain_aug_db. To isolate whether dynamic mixing itself helps, v16 disables th
 matches or exceeds v13, dynamic mixing is validated and next step is wider bottleneck (bn_dim=128).
 If it still underperforms, the SNR range or speed perturbation settings need tuning.
 
+**v16 conclusion: dynamic mixing diverges from the eval distribution**
+v16 = +6.79 dB (train +8.09 dB, gap +1.3 dB) — still below v13's +7.22 dB even with augmentation
+stripped to the bare minimum. Two readings: (1) the on-the-fly random pairings / speed perturb / SNR
+jitter shift the training distribution away from the fixed real-mixture dev/test sets; (2) the model
+underfits (gap≈0 across v13–v16), so added training-time diversity hurts rather than helps. Both point
+the same way: stop adding data-side diversity, go back to fixed real mixtures, and attack the
+underfit directly (front-end + loss + schedule). This is the v17 mandate.
+
+**Finer encoder from scratch (v17 — Experiment A)**
+Through v13–v16 the train-val gap stayed ~0 dB — the model is underfitting, not overfitting, so more
+regularisation/augmentation (v8 dropout, v9/v15 gain aug, v15/v16 dynamic mixing) all regressed.
+The remaining suspect is the front-end: the encoder is Conv1d(k=32, s=16), i.e. an analysis window of
+32 samples / hop 16 — coarse. DPRNN gets its dB from very short filters that create long sequences for
+the dual-path RNN to exploit; a stride-16 front-end caps the achievable SI-SDRi. v17 halves both:
+kernel 32→16, stride 16→8 (~2x frames, ~8000 for a 4 s clip). Because changing the conv kernel/stride
+makes the v13 encoder/decoder weights non-transferable (`_transfer()` asserts matching kernel_sz), the
+whole network is trained end-to-end **from scratch** — which also removes the freeze phase (nothing to
+protect). `oracle_mask_diagnostic.py` is the cheap gate: it computes oracle STFT-mask SI-SDRi at the
+32:16 vs 16:8 analysis windows on dev, bounding the headroom before any A100 time is spent. Capacity
+(bn_dim 64→128) is deliberately held until the finer front-end is in place — widening the separator
+behind a coarse encoder is exactly what v14 disproved.
+
+**Pure SI-SDR loss (v17 — Experiment B)**
+v13–v16 minimised `si_sdr + 0.5·spec + 5.0·recon`. The recon term (RMS-normalised MSE of
+`sum(estimates) − mixture`) was weighted at 5× the SI-SDR term and is scale-dependent, while SI-SDR is
+scale-invariant — so the two gradients pull in different directions and the optimised objective is not
+the reported metric. The recon term was originally added (v4–v6) to fight decoder weight amplification
+under sigmoid masks; with softmax masks (sum-to-1) and a converged decoder that problem is gone, so the
+term is now mostly a distraction. v17 sets lambda_recon=0 and lambda_spec=0.1 (small perceptual
+smoothing only), matching the published DPRNN recipe which trains on pure SI-SDR.
+
+**Plateau LR + Adam lr=1e-3, no freeze (v17 — Experiment E)**
+The v13–v16 schedule (separator lr=5e-4 with cosine-to-1e-6, encoder/decoder fine-tuned at 5e-5 after a
+20-epoch freeze) was designed to fine-tune around a warmstarted front-end. A from-scratch encoder needs
+a real learning rate and no freeze. v17 uses a single Adam group at lr=1e-3 with ReduceLROnPlateau
+(mode=max on val SI-SDRi, factor 0.5, patience 4 val-checks). The plateau threshold is set to
+**absolute 0.01 dB** (not the PyTorch default `threshold_mode='rel'`): SI-SDRi starts negative and
+crosses zero, where a relative threshold misbehaves (a stuck metric can keep counting as "improvement"
+and the LR never drops). grad_clip stays at 5. batch_size drops 16→8 because the stride-8 encoder
+roughly doubles activation memory. Note A/B/E are physically coupled — changing the encoder stride
+forces from-scratch training, which in turn needs the new LR schedule and (for a clean read) the
+reference loss — so v17 is intentionally one coherent recipe change, ablated downward from a working
+baseline rather than upward from a stuck one.
+
 **Speed perturbation: F.interpolate not torchaudio.resample (v15 fix)**
 Original implementation used `torchaudio.functional.resample` (sinc interpolation) — computed a
 polyphase filter on every call, causing ~33x slowdown (670s/100 batches vs 20s). Replaced with

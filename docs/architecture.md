@@ -1,7 +1,35 @@
 # Architecture
 <!-- dependencies: sep_model_v10.py (active), sep_model_v7.py (v7 reference), sep_model.py (v3–v6 reference) -->
 
-## SNNTasNet model graph (v13 — ACTIVE, snn_mode="dprnn")
+## SNNTasNet model graph (v17 — ACTIVE, snn_mode="dprnn", finer encoder)
+
+```
+Input: (B, T)  — mono mixture, T=64000 (4s @ 16kHz)
+
+Encoder:   Conv1d(1→256, kernel=16, stride=8, ReLU)          [FROM SCRATCH — was 32/16]
+           → (B, 256, L)  where L≈7999 (~2x v13's frame count)
+           Finer time resolution is the v17 hypothesis (DPRNN literature gets its dB here).
+
+Separator: DPRNNSeparator  [snn_mode="dprnn", unchanged from v13]
+           bn_dim=64, rnn_hidden=128, 6 blocks, chunk_size=200 (~sqrt(2·frames) at stride 8)
+
+Decoder:   ConvDecoder
+           - 3 × Conv1d(256,256,k=3)+GroupNorm(8,256)+PReLU
+           - ConvTranspose1d(256→1, kernel=16, stride=8)     [mirrors finer encoder]
+
+Output: {"separated": (B, 2, T), "masks": (B, 2, 256, L), "spike_recs": []}
+
+Loss:   pure SI-SDR (PIT) + 0.1·spec     [lambda_recon=0, lambda_rate=0 — Experiment B]
+Train:  end-to-end from scratch, no freeze, no warmstart; Adam lr=1e-3 + ReduceLROnPlateau.
+```
+
+**Params:** ~3.23M total. **Why finer:** v13–v16 plateaued at gap≈0 (underfitting). The
+stride-16 front-end (analysis window 32) is the suspected dB ceiling; `oracle_mask_diagnostic.py`
+bounds the headroom before training. Capacity (bn_dim 64→128) and train-360 are held for later.
+
+---
+
+## SNNTasNet model graph (v13–v16 — reference, snn_mode="dprnn")
 
 ```
 Input: (B, T)  — mono mixture, T=64000 (4s @ 16kHz)
@@ -255,10 +283,28 @@ SeparationLoss(
 
 ---
 
-## v15/v16 config (sep_model_v10.py)
+## v17 config (sep_model_v10.py) — ACTIVE
 
 ```python
-# v15/v16 (dprnn v13-sized + dynamic mixing — ACTIVE):
+# v17 (dprnn v13-sized + FINER ENCODER, from scratch — ACTIVE):
+{"n_filters":256, "kernel_sz":16, "stride":8,          # finer front-end (was 32/16)
+ "hidden":128, "n_layers":6, "dropout":0.1,
+ "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
+ "decoder_refine":3, "decoder_groups":8, "use_weight_norm":False,
+ "dprnn_bn_dim":64, "dprnn_rnn_hidden":128}
+# starter: NONE — trained end-to-end from scratch (no warmstart, no freeze)
+# loss: pure SI-SDR (lambda_recon=0, lambda_spec=0.1, lambda_rate=0)
+# optim: Adam lr=1e-3 + ReduceLROnPlateau(max, factor 0.5, patience 4, ABS 0.01 dB), clip 5
+# params: ~3,233,344 total
+# checkpoint model_cfg carries kernel_sz=16/stride=8 → eval/inference rebuild correctly
+```
+
+---
+
+## v15/v16 config (sep_model_v10.py) — reference
+
+```python
+# v15/v16 (dprnn v13-sized + dynamic mixing — COMPLETE):
 {"n_filters":256, "kernel_sz":32, "stride":16,
  "hidden":128, "n_layers":6, "dropout":0.1,
  "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
@@ -306,7 +352,7 @@ SeparationLoss(
 ## v10/v11 config (sep_model_v10.py)
 
 ```python
-# v11 (gru_stateful — ACTIVE):
+# v11 (gru_stateful — reference; superseded by DPRNN in v13):
 {"n_filters":256, "kernel_sz":32, "stride":16,
  "hidden":512, "n_layers":6, "dropout":0.35,
  "snn_mode":"gru_stateful", "snn_chunk":100, "n_speakers":2,
@@ -360,12 +406,31 @@ so inference scripts rebuild the model correctly.
 
 ---
 
+## Loss function (v17 — pure SI-SDR)
+
+```python
+# two_speaker_train_v17.py — pit_forward()
+total = si_sdr_loss                      # PIT SI-SDR (best of 2 permutations), the primary+only
+        + 0.1 * spec_loss                # small multi-res log-STFT L1 (perceptual smoothing)
+# lambda_recon = 0.0   (was 5.0 in v13–v16 — scale-dependent recon dropped)
+# lambda_rate  = 0.0   (DPRNN has no spikes)
+```
+Rationale (Experiment B): the reported metric is SI-SDRi, so optimise SI-SDR directly. The old
+`lambda_recon=5.0` RMS-MSE term weighted reconstruction at 5× the SI-SDR term and is
+scale-dependent (SI-SDR is scale-invariant), so it pulled against the metric. The DPRNN reference
+recipe trains on pure SI-SDR; v17 adopts it. `lambda_spec=0.1` is kept only as light perceptual
+smoothing and can be set to 0. See decisions.md "Pure SI-SDR loss (v17)".
+
+---
+
 ## Key code locations
 
 | What | File | Notes |
 |---|---|---|
+| v17 finer-encoder cfg + from-scratch train | `two_speaker_train_v17.py` | kernel_sz=16/stride=8, Adam+plateau, pure SI-SDR |
+| Oracle-mask front-end ceiling | `oracle_mask_diagnostic.py` | STFT IRM/IBM SI-SDRi per window (v17 gate) |
 | DPRNNBlock | `sep_model_v10.py` | v13 dual-path block (intra + inter chunk BiLSTM) |
-| DPRNNSeparator | `sep_model_v10.py` | v13 active separator |
+| DPRNNSeparator | `sep_model_v10.py` | v13–v17 active separator |
 | StatefulGRUSeparator | `sep_model_v10.py` | v11/v12 separator (reference) |
 | StatefulSNNSeparator | `sep_model_v10.py` | v10 design (too slow) |
 | LIFResidualBlock (beta clamp) | `sep_model_v10.py` | shared with v7 |

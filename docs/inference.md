@@ -80,9 +80,14 @@ EMA weights (`ema_state["shadow"]`) are always used for inference when present.
 
 **v6 and earlier** used a single `ConvTranspose1d` decoder (no refinement blocks).
 `two_speaker_inference.py` loads the model architecture from `model_cfg` in the checkpoint,
-so it works with both v6/v7 (`sep_model.py`/`sep_model_v7.py`) and v10/v11/v12 (`sep_model_v10.py`)
-checkpoints. The import uses a try/except fallback: prefers `sep_model_v10` (v11/v12), falls back
+so it works with both v6/v7 (`sep_model.py`/`sep_model_v7.py`) and v10–v17 (`sep_model_v10.py`)
+checkpoints. The import uses a try/except fallback: prefers `sep_model_v10` (v11+), falls back
 to `sep_model` (v3-v7) if `sep_model_v10.py` is not present.
+
+**v17 note:** v17 checkpoints carry a finer encoder (`kernel_sz=16, stride=8`) in `model_cfg`.
+Because both inference scripts read `kernel_sz`/`stride` from `model_cfg` and rebuild the encoder
+and `ConvTranspose1d` decoder accordingly, no flags or code changes are needed — the finer front-end
+loads automatically alongside the matching v13-sized DPRNN separator (`dprnn_bn_dim`, `dprnn_rnn_hidden`).
 
 ---
 
@@ -153,7 +158,7 @@ model automatically. No manual arch flags needed.
 
 | Script | n_speakers | Checkpoint |
 |---|---|---|
-| `two_speaker_inference.py` | 2 | v11–v16 checkpoints (trained with `n_speakers=2`) |
+| `two_speaker_inference.py` | 2 | v11–v17 checkpoints (trained with `n_speakers=2`; v17 finer encoder auto-detected) |
 | `sep_inference.py` | 8 | `best_snn_v2.pt`, `best_snn_v1_gru_ep696.pt` |
 
 Loading an 8-speaker checkpoint in `two_speaker_inference.py` will print a
