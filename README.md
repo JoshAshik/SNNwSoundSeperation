@@ -72,9 +72,10 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 | v14 | Libri2Mix | DPRNN (wider) | +7.21 dB | rnn_hidden 128→256 — no gain; data-bound |
 | v15 | Libri2Mix (dynamic) | DPRNN | +6.64 dB | Dynamic mixing + full augment — over-regularised |
 | v16 | Libri2Mix (dynamic) | DPRNN | +6.79 dB | Dynamic mixing only — still < v13 (diverges from eval) |
-| **v17** | **Libri2Mix (fixed)** | **DPRNN, finer encoder** | **In progress** | **k=16/s=8 from scratch + pure SI-SDR loss** |
+| **v17** | **Libri2Mix (fixed)** | **DPRNN, finer encoder** | **+9.35 dB** | **k=16/s=8 from scratch + pure SI-SDR — +2.13 dB over v13** |
+| v18 | Libri2Mix (fixed) | DPRNN, bn_dim=128 | +8.80 dB | Wider bottleneck — below v17 + overfit late; capacity not the bottleneck |
 
-**Best so far:** +7.22 dB (v13). **Target:** val SI-SDRi > **+10 dB** (Conv-TasNet baseline on Libri2Mix: ~14 dB)
+**Best so far:** **+9.35 dB (v17)** — 0.65 dB from target. **Target:** val SI-SDRi > **+10 dB** (Conv-TasNet baseline on Libri2Mix: ~14 dB). Two capacity bumps (v14, v18) failed → next lever is more real data (train-360).
 
 ### Key Architectural Decisions
 
@@ -83,7 +84,8 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 - **Stateful separator (v10→v11):** Stateless LIF reset membrane state every 0.1s chunk, forcing speaker re-identification; stateful variants carry hidden state across chunks
 - **GRU over SNN separator (v11):** StatefulSNNSeparator required 4000 Python-CUDA dispatches per forward pass (~20s/batch); StatefulGRUSeparator uses a single cuDNN kernel per chunk
 - **DPRNN separator (v13):** GRU separator hit a ~+5.5 dB capacity ceiling (train and val both capped → not overfitting). Dual-path RNN alternates intra-chunk and inter-chunk BiLSTMs; +1.76 dB over v12 to +7.22 dB
-- **Finer encoder, from scratch (v17):** v13–v16 plateaued with a ~0 dB train-val gap (underfitting). The coarse kernel=32/stride=16 front-end is the suspected ceiling; v17 halves both (k=16, s=8), drops the scale-dependent reconstruction loss for pure SI-SDR, and trains end-to-end from scratch with a plateau LR schedule. An oracle-mask diagnostic gates the run
+- **Finer encoder, from scratch (v17):** v13–v16 plateaued with a ~0 dB train-val gap (underfitting). The coarse kernel=32/stride=16 front-end is the suspected ceiling; v17 halves both (k=16, s=8), drops the scale-dependent reconstruction loss for pure SI-SDR, and trains end-to-end from scratch with a plateau LR schedule. **Result: +9.35 dB, +2.13 dB over v13** — the front-end was the ceiling, as predicted
+- **Capacity is not the bottleneck — data is (v14, v18):** two attempts to add separator capacity both failed — v14 (wider `rnn_hidden=256`) gained nothing, and v18 (wider `bn_dim=128`, on top of v17's finer front-end) scored *below* v17 (+8.80) and overfit late. The model memorizes the 13,900-utterance train-100 set rather than generalizing. The indicated next lever is more **real** data (train-360), not a bigger model
 
 ## File Structure
 

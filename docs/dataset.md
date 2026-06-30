@@ -1,14 +1,20 @@
 # Dataset
 <!-- dependencies: librimix_dataset.py (v17 train + all val/test), dynamic_mix_dataset.py (v15/v16 reference), fsd50k_dataset.py (v3–v6), sep_dataset.py, config.py -->
 
-> **v17 data regime:** back to **fixed real Libri2Mix train-100** via `LibriMixDataset`, with
-> augmentation OFF. Dynamic mixing (v15/v16) is dropped — it diverged from the fixed-mixture eval
-> distribution (v16 = +6.79 dB < v13 = +7.22 dB). The model underfits (gap≈0), so the fix is a
+> **v17/v18 data regime:** back to **fixed real Libri2Mix train-100** via `LibriMixDataset`, with
+> *dataset* augmentation OFF. Dynamic mixing (v15/v16) is dropped — it diverged from the fixed-mixture
+> eval distribution (v16 = +6.79 dB < v13 = +7.22 dB). The model underfits (gap≈0), so the fix is a
 > finer encoder + pure-SI-SDR loss, not more data augmentation. See [training.md](training.md).
+>
+> **Caveat — one augmentation is NOT off:** the encoder's `SpecAugment` frequency-masking
+> (`sep_model_v10.py:687`, gated on `model.training`, default `freq_mask=27, n_freq_masks=2`) still
+> fires every training step. `train_augment=False` only disables the *dataset*-level
+> `spike_safe_augment`. SpecAugment has been on since v7 and is held constant v13→v18, so version
+> comparisons stay valid; a "SpecAugment off" run would be its own single-variable experiment.
 
 ---
 
-## Libri2Mix (v7–v14, v17 — ACTIVE for training; all versions for val/test)
+## Libri2Mix (v7–v14, v17/v18 — training; all versions for val/test; v17 = best +9.35 dB)
 
 Pre-generated 2-speaker clean speech mixtures from LibriSpeech. Academic standard benchmark for blind source separation.
 
@@ -32,7 +38,13 @@ Pre-generated 2-speaker clean speech mixtures from LibriSpeech. Academic standar
 /mnt/beegfs/juashik/librimix/wham_noise/    — WHAM noise (tr/ files unreadable — train-360 not generated)
 ```
 
-**train-360 not available:** WHAM noise `tr/` files on BeeGFS return `System error` when read. train-100 (13,900 mixtures) is sufficient — Conv-TasNet achieves ~14 dB on it.
+**train-360 — now the priority next step (was deferred):** WHAM noise `tr/` files on BeeGFS return
+`System error` when read, which is why train-360 was never generated. Through v17 this was acceptable
+(train-100 got to +9.35 dB). But v18 showed the model now **overfits** train-100 when given more
+capacity → **data diversity is the bottleneck**. train-360 (3× real mixtures, same generation pipeline
+as dev/test, so no distribution shift) is the indicated lever to push past +9.35 toward +10. Diagnosing
+the WHAM `tr/` read error is the gating task; no model/training change is needed afterward (point
+`two_speaker_train_v17.py --train_split train-360`).
 
 ### File naming
 Each file is named `<utt1_id>_<utt2_id>.wav`. The `s1/` and `s2/` files share the same stem as `mix_clean/`. The dataset loader pairs them by stem.
@@ -48,7 +60,8 @@ Applies spike-safe augmentation (gain jitter ±6 dB, polarity inversion, circula
 cosine taper) during training when `augment=True`.
 
 `build_librimix_dataloaders()` accepts a `train_augment` parameter (default: `True`). Setting
-`train_augment=False` disables all dataset-level augmentation for the training split. This is used
+`train_augment=False` disables all *dataset-level* augmentation for the training split (it does NOT
+touch the encoder's SpecAugment, which is a model-internal layer — see the caveat at the top). This is used
 by v12 stage-2 fine-tuning and by **v17** (`--no_train_augment`, the default in
 `two_speaker_train_v17.py`) — v17 trains on clean fixed mixtures with no augmentation because the
 model underfits. Note that this is separate from the per-source gain augmentation in the training

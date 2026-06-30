@@ -1,7 +1,7 @@
 # Architecture
 <!-- dependencies: sep_model_v10.py (active), sep_model_v7.py (v7 reference), sep_model.py (v3–v6 reference) -->
 
-## SNNTasNet model graph (v17 — ACTIVE, snn_mode="dprnn", finer encoder)
+## SNNTasNet model graph (v17 — BEST +9.35 dB, snn_mode="dprnn", finer encoder)
 
 ```
 Input: (B, T)  — mono mixture, T=64000 (4s @ 16kHz)
@@ -283,10 +283,10 @@ SeparationLoss(
 
 ---
 
-## v17 config (sep_model_v10.py) — ACTIVE
+## v17 config (sep_model_v10.py) — BEST (+9.35 dB)
 
 ```python
-# v17 (dprnn v13-sized + FINER ENCODER, from scratch — ACTIVE):
+# v17 (dprnn v13-sized + FINER ENCODER, from scratch — ALL-TIME BEST):
 {"n_filters":256, "kernel_sz":16, "stride":8,          # finer front-end (was 32/16)
  "hidden":128, "n_layers":6, "dropout":0.1,
  "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
@@ -295,8 +295,26 @@ SeparationLoss(
 # starter: NONE — trained end-to-end from scratch (no warmstart, no freeze)
 # loss: pure SI-SDR (lambda_recon=0, lambda_spec=0.1, lambda_rate=0)
 # optim: Adam lr=1e-3 + ReduceLROnPlateau(max, factor 0.5, patience 4, ABS 0.01 dB), clip 5
-# params: ~3,233,344 total
+# params: ~3,233,344 total  |  result: +9.35 dB (ep180), +2.13 dB over v13
 # checkpoint model_cfg carries kernel_sz=16/stride=8 → eval/inference rebuild correctly
+```
+
+---
+
+## v18 config (sep_model_v10.py) — capacity ablation, COMPLETE (+8.80 dB, < v17)
+
+```python
+# v18 (v17 recipe + WIDER bottleneck — capacity did NOT help, overfit late):
+{"n_filters":256, "kernel_sz":16, "stride":8,
+ "hidden":128, "n_layers":6, "dropout":0.1,
+ "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
+ "decoder_refine":3, "decoder_groups":8, "use_weight_norm":False,
+ "dprnn_bn_dim":128, "dprnn_rnn_hidden":128}       # bn_dim 64→128 (only change vs v17)
+# starter: NONE — from scratch, same recipe as v17
+# efficiency: bf16 autocast (no GradScaler), val under no_grad, cached STFT windows (fp32),
+#             dataloader prefetch_factor=4, batch_size 24
+# params: ~4,267,904 total (separator 3,667,584)
+# result: +8.80 dB best, declined to +8.42 by ep200 (overfit) → capacity not the bottleneck
 ```
 
 ---

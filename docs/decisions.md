@@ -173,6 +173,34 @@ forces from-scratch training, which in turn needs the new LR schedule and (for a
 reference loss — so v17 is intentionally one coherent recipe change, ablated downward from a working
 baseline rather than upward from a stuck one.
 
+**v17 result + verdict: the front-end WAS the ceiling**
+v17 reached +9.35 dB (ep180) — +2.13 dB over v13, the biggest jump since the DPRNN change itself, and
+the new all-time best. The gap stayed ≈0 throughout and the LR held at 1e-3 until ~ep110 (uninterrupted
+improvement). This confirms the single hypothesis: the coarse stride-16 front-end (analysis window 32)
+was capping SI-SDRi, exactly as the DPRNN literature predicts. The efficiency knobs (no_grad val,
+cached STFT windows, killed per-batch .item() syncs, bf16, dataloader prefetch) don't change the learned
+function — they only cut A100 wall time.
+
+**Wider bottleneck (v18 — Experiment F, FAILED): capacity is not the bottleneck, data is**
+With the finer front-end in place and v17 still underfitting (gap≈0), capacity was the textbook next
+lever, so v18 widened the only thing held back: dprnn_bn_dim 64→128 (single variable vs v17; rnn_hidden
+left at 128). Result: +8.80 dB — *below* v17, and it overfit late (val peaked ~+8.80 around ep150–180
+then declined to +8.42 by ep200 while train rose to +9.52, gap widening +0.4→+1.1). The wider model
+memorised the 13,900-utterance train-100 set rather than generalising. Combined with v14 (wider
+rnn_hidden, also no help), two independent capacity bumps have now failed, and the wider one actively
+overfit. Verdict: capacity is NOT the bottleneck — **data diversity is** (the conclusion v14 first
+reached, now confirmed). Do NOT extend v18: the late val *decline* is overfitting, not undertraining, so
+more epochs would only hurt.
+  - Confound, stated honestly: v18 also ran batch 24 (raised for A100 throughput) vs v17's batch 8, i.e.
+    ~3× fewer gradient updates per epoch, so the exact dB gap is not a clean single-variable read. But
+    "too few updates" cannot produce *late overfitting* (a model still short on training keeps improving
+    val, it doesn't peak and decline), so the "capacity didn't help" conclusion holds regardless.
+  - Next lever (data axis): generate **train-360** — 3× more REAL mixtures from the same generation
+    pipeline as dev/test, so it adds genuine speaker/content diversity WITHOUT the distribution shift
+    that sank v15/v16's synthetic dynamic mixing. No model/training change needed: point
+    two_speaker_train_v17.py's --train_split at train-360. Blocker: WHAM tr/ files unreadable on BeeGFS
+    (the original reason train-360 was never generated) must be diagnosed first.
+
 **Speed perturbation: F.interpolate not torchaudio.resample (v15 fix)**
 Original implementation used `torchaudio.functional.resample` (sinc interpolation) — computed a
 polyphase filter on every call, causing ~33x slowdown (670s/100 batches vs 20s). Replaced with

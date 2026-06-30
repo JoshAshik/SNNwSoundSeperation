@@ -1,7 +1,42 @@
 # Training
-<!-- dependencies: two_speaker_train_v17.py (active), two_speaker_train_v15.py (v15/v16 reference), two_speaker_train_v14.py (reference), two_speaker_train_v13.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py, oracle_mask_diagnostic.py -->
+<!-- dependencies: two_speaker_train_v17.py (BEST), two_speaker_train_v18.py (capacity ablation), two_speaker_train_v15.py (v15/v16 reference), two_speaker_train_v13.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py, oracle_mask_diagnostic.py -->
 
-## Current status (v17 — ACTIVE)
+## Current status — v17 is the BEST model; next lever is DATA (train-360)
+
+```
+Best:         v17 = +9.35 dB (ep180), ALL-TIME BEST, 0.65 dB from the +10 dB target.
+Verdict:      Two capacity bumps now failed — v14 (wider rnn_hidden) and v18 (wider bn_dim,
+              which also overfit late). With v17's finer front-end already in place and the
+              model overfitting when widened, capacity is NOT the bottleneck: DATA diversity is.
+Next step:    Generate train-360 (3× real mixtures, SAME pipeline as dev/test → no distribution
+              shift, unlike v15/v16 dynamic mixing). No code change needed —
+              two_speaker_train_v17.py reads train-100 via LibriMixDataset; point
+              --train_split at train-360 once built. Blocker: WHAM tr/ files unreadable on
+              BeeGFS (the original reason train-360 was never generated) — diagnose first.
+```
+
+## Previous status (v18 — COMPLETE, capacity ablation, did NOT beat v17)
+
+```
+Run:          v18 — v17 recipe + WIDER separator bottleneck (Experiment F), single variable
+Architecture: sep_model_v10.py  snn_mode=dprnn (DPRNNSeparator, rnn_hidden=128, bn_dim=128)
+Script:       two_speaker_train_v18.py
+Start ckpt:   NONE — from scratch (same recipe as v17, only bn_dim 64→128)
+Dataset:      LibriMixDataset — fixed REAL train-100, DATASET augmentation OFF (SpecAugment on)
+Efficiency:   bf16 autocast (no GradScaler), val under no_grad, cached STFT windows, dataloader
+              prefetch_factor=4, batch_size 24 (raised from 16 for A100 throughput)
+Result:       best val SI-SDRi = +8.80 dB (~ep150–180), BELOW v17's +9.35 dB.
+              Tail overfit: val declined +8.80→+8.42 while train rose to +9.52 by ep200, gap
+              widened +0.4→+1.1. More capacity → memorised the 13,900-utterance train set.
+Conclusion:   Capacity is not the bottleneck (confirms v14). DATA is. Do NOT extend (the late
+              val decline is overfitting, not undertraining — extra epochs would hurt).
+Caveat:       v18 also ran batch 24 vs v17's batch 8 (~3× fewer gradient updates), so the exact
+              dB is confounded — but late overfitting can't be explained by too-few updates, so
+              the "capacity didn't help" read holds.
+Best ckpt:    checkpoints_v18/best_2spk.pt (val=+8.80 dB)
+```
+
+## Previous status (v17 — COMPLETE, ALL-TIME BEST +9.35 dB)
 
 ```
 Run:          v17 — finer encoder (k=16, s=8) FROM SCRATCH + reference DPRNN recipe
@@ -9,7 +44,9 @@ Architecture: sep_model_v10.py  snn_mode=dprnn (DPRNNSeparator, rnn_hidden=128, 
 Script:       two_speaker_train_v17.py
 Start ckpt:   NONE — trained end-to-end from scratch (no warmstart, no freeze)
 Dataset:      LibriMixDataset — fixed REAL Libri2Mix train-100 pairs (dynamic mixing dropped),
-              augmentation OFF (gain_aug=0, train_augment=False)
+              DATASET augmentation OFF (gain_aug=0, train_augment=False). NOTE the encoder's
+              SpecAugment freq-masking (sep_model_v10.py:687) is still active during training —
+              held constant v13→v18, so version comparisons stay valid.
 Key changes:  Single coherent hypothesis — the front-end/loss/schedule were the ceiling, not
               separator capacity or data augmentation (gap≈0 through v13–v16 → underfitting).
                 A/D  encoder kernel 32→16, stride 16→8 (~2x frames, ~8000 for a 4s clip).
@@ -23,11 +60,11 @@ Key changes:  Single coherent hypothesis — the front-end/loss/schedule were th
                 E    Adam lr=1e-3 + ReduceLROnPlateau (halve, patience 4 val-checks, ABS 0.01 dB
                      threshold), grad clip 5. Replaces cosine-to-1e-6 + 5e-5 enc/dec fine-tune.
               batch_size=8 (stride-8 doubles activations vs v16's stride-16 batch 16).
-Gate:         oracle_mask_diagnostic.py — confirm 16:8 STFT-oracle beats 32:16 by >~1 dB on dev
-              BEFORE committing the A100 run (bounds the finer front-end's headroom).
-Held later:   dprnn_bn_dim 64→128 capacity; train-360 (not yet generated on BeeGFS).
-Target:       > +10.0 dB val SI-SDRi (professor's target); bar to beat = v13's +7.22 dB.
-Status:       Training on ARC (job 242617, from scratch, self-resubmitting)
+Result:       best val SI-SDRi = +9.35 dB (ep180), gap ≈ 0 throughout the climb, LR still 1e-3
+              until ~ep110 (uninterrupted improvement). +2.13 dB over v13 — the biggest jump
+              since the DPRNN change, and proof that the coarse stride-16 front-end was the
+              ceiling. Bar that v18 had to beat (and didn't).
+Best ckpt:    checkpoints_v17/best_2spk.pt (val=+9.35 dB) — ALL-TIME BEST — DO NOT OVERWRITE
 ```
 
 ## Previous status (v16 — COMPLETE)
@@ -248,7 +285,25 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | v14 | Libri2Mix | +7.21 dB | Wider DPRNN (rnn_hidden=256); no improvement over v13; data diversity bottleneck |
 | v15 | Libri2Mix (dynamic) | +6.64 dB | Dynamic mixing + speed perturb + full augment stack — over-regularised |
 | v16 | Libri2Mix (dynamic) | +6.79 dB | Dynamic mixing + speed perturb ONLY — still < v13; dynamic mixing diverges from eval |
-| v17 | Libri2Mix (fixed) | ACTIVE | Finer encoder k=16/s=8 from scratch + pure SI-SDR loss + plateau LR; fixed real mixtures |
+| v17 | Libri2Mix (fixed) | **+9.35 dB** (ALL-TIME BEST) | Finer encoder k=16/s=8 from scratch + pure SI-SDR + plateau LR; +2.13 dB over v13 — coarse front-end was the ceiling |
+| v18 | Libri2Mix (fixed) | +8.80 dB | v17 recipe + wider bottleneck (bn_dim=128); below v17 + overfit late → capacity not the bottleneck, DATA is |
+
+---
+
+## Hyperparameters (v18 DEFAULTS in two_speaker_train_v18.py)
+
+Same as v17 except the single intended variable plus efficiency knobs:
+
+| Parameter | Value | Notes |
+|---|---|---|
+| **dprnn_bn_dim** | **128** | **WIDENED from 64 — the single v18 variable (Experiment F)** |
+| batch_size | 24 | Raised from v17's 8 (A100 throughput); ~3× fewer updates/epoch — a confound |
+| amp dtype | bfloat16 | autocast bf16, GradScaler removed (A100) |
+| (val) | no_grad | validation runs under `torch.set_grad_enabled(False)` — VRAM/speed fix |
+| STFT windows | cached | Hann windows memoised; spectral loss forced fp32 (bf16-safe) |
+| dataloader | prefetch_factor=4 | hides BeeGFS per-item read latency |
+| (all other params same as v17) | | |
+Result: +8.80 dB — below v17, overfit late. Capacity is not the bottleneck.
 
 ---
 
@@ -275,7 +330,7 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | lambda_rate | 0.0 | DPRNN has no spikes |
 | **lambda_recon** | **0.0** | **Pure SI-SDR — removed scale-dependent recon (was 5.0)** |
 | gain_aug_db | 0.0 | Per-source gain aug off |
-| train_augment | False | Dataset spike_safe_augment off (underfitting) |
+| train_augment | False | Dataset spike_safe_augment off (encoder SpecAugment still on — see dataset.md) |
 | dropout | 0.1 | Light regularization |
 | dprnn_bn_dim | 64 | Bottleneck (capacity 64→128 held for later) |
 | dprnn_rnn_hidden | 128 | v13-sized |
@@ -421,13 +476,15 @@ Result: +7.21 dB — no improvement over v13. Wider rnn_hidden not the bottlenec
 | File | Role | Status |
 |---|---|---|
 | `sep_model_v10.py` | Architecture — DPRNNSeparator + StatefulGRUSeparator + StatefulSNNSeparator + ConvDecoder | Done |
-| `two_speaker_train_v17.py` | v17 training — finer encoder (k=16,s=8) from scratch, pure SI-SDR loss, plateau LR, fixed real train-100 | Done |
+| `two_speaker_train_v17.py` | **BEST** — finer encoder (k=16,s=8) from scratch, pure SI-SDR, plateau LR, fixed real train-100 → +9.35 dB. Point `--train_split train-360` here once that split exists | Done |
+| `two_speaker_train_v18.py` | v18 — v17 recipe + bn_dim=128, batch 24, bf16, val no_grad, cached STFT windows. COMPLETE, +8.80 dB (capacity did not help) | Done |
 | `oracle_mask_diagnostic.py` | STFT oracle-mask (IRM/IBM) SI-SDRi ceiling per front-end window — v17 gate (no model/training) | Done |
 | `slurm_v17_twospeaker.sh` | ARC SLURM script for v17 (from scratch, batch 8, A100, 6h wall, self-resubmit) | Done |
+| `slurm_v18_twospeaker.sh` | ARC SLURM script for v18 (bn_dim=128, batch 24) | Done |
 | `smoke_test_v17.py` | End-to-end smoke test — synthesises tiny Libri2Mix, runs train/resume/oracle to exit 0 | Done |
-| `librimix_dataset.py` | Libri2Mix reader — train (v17) + val/test (train_augment param) | Done |
+| `librimix_dataset.py` | Libri2Mix reader — train (v17/v18) + val/test; prefetch_factor=4 added | Done |
 | `eval_dataset.py` | Batch SI-SDRi evaluation on dev/test (--max_samples for dev50) | Done |
-| `two_speaker_inference.py` | 2-speaker PIT inference (v11–v17 compatible via sep_model_v10) | Done |
+| `two_speaker_inference.py` | 2-speaker PIT inference (v11–v18 compatible via sep_model_v10) | Done |
 
 ### v15/v16 pipeline (complete — reference)
 | File | Role | Status |
@@ -516,7 +573,7 @@ ARC (~/SNNwSoundSeperation/):
   checkpoints_v12a/best_2spk_latest.pt   — v12 Run A ep100 (training complete)
   checkpoints_v12c/best_2spk.pt          — v12 Run C best (val=+5.20 dB)
   checkpoints_v12c/best_2spk_latest.pt   — v12 Run C ep100 (training complete)
-  checkpoints_v13/best_2spk.pt           — v13 best (val=+7.22 dB) — ALL-TIME BEST — DO NOT OVERWRITE
+  checkpoints_v13/best_2spk.pt           — v13 best (val=+7.22 dB) — DO NOT OVERWRITE (superseded by v17 +9.35)
   checkpoints_v13/best_2spk_latest.pt    — v13 ep200 (training complete)
   checkpoints_v14/best_2spk.pt           — v14 best (val=+7.21 dB) — DO NOT OVERWRITE
   checkpoints_v14/best_2spk_latest.pt    — v14 ep200 (training complete)
@@ -524,8 +581,10 @@ ARC (~/SNNwSoundSeperation/):
   checkpoints_v15/best_2spk_latest.pt    — v15 ep200 (training complete)
   checkpoints_v16/best_2spk.pt           — v16 best (val=+6.79 dB) — DO NOT OVERWRITE
   checkpoints_v16/best_2spk_latest.pt    — v16 ep200 (training complete)
-  checkpoints_v17/best_2spk.pt           — v17 best (finer encoder from scratch) — IN PROGRESS
-  checkpoints_v17/best_2spk_latest.pt    — v17 latest (self-resubmit resume point)
+  checkpoints_v17/best_2spk.pt           — v17 best (val=+9.35 dB) — ALL-TIME BEST — DO NOT OVERWRITE
+  checkpoints_v17/best_2spk_latest.pt    — v17 ep200 (training complete)
+  checkpoints_v18/best_2spk.pt           — v18 best (val=+8.80 dB, capacity ablation) — DO NOT OVERWRITE
+  checkpoints_v18/best_2spk_latest.pt    — v18 ep200 (training complete)
 ```
 
 ### CSV logs
@@ -544,13 +603,29 @@ ARC (~/SNNwSoundSeperation/):
 - v14 (2-spk): `v14_train_log.csv` (ARC, complete — val=+7.21 dB, no improvement over v13)
 - v15 (2-spk): `v15_train_log.csv` (ARC, complete — val=+6.64 dB, over-regularised)
 - v16 (2-spk): `v16_train_log.csv` (ARC, complete — val=+6.79 dB, dynamic mixing diverges)
-- v17 (2-spk): `v17_train_log.csv` (ARC, in progress — finer encoder from scratch)
+- v17 (2-spk): `v17_train_log.csv` (ARC, complete — val=+9.35 dB, ALL-TIME BEST)
+- v18 (2-spk): `v18_train_log.csv` (ARC, complete — val=+8.80 dB, capacity ablation)
 
 ---
 
 ## Commands
 
-### v17: Deploy to ARC and start training (PRIMARY)
+### NEXT (PRIMARY): train-360 on the best recipe
+```
+v13–v18 are COMPLETE; v17 (+9.35 dB) is the best model. Capacity is ruled out
+(v14, v18). The next lever is more REAL data — generate train-360 (3× mixtures,
+same pipeline as dev/test → no distribution shift), then run the v17 recipe on it:
+
+  python3 two_speaker_train_v17.py --train_split train-360 \
+      --ckpt_dir ./checkpoints_v19 --log_dir ./runs_v19 --csv_path ./v19_train_log.csv \
+      [+ the slurm wrapper flags]
+
+No code change needed — LibriMixDataset already takes --train_split. Blocker:
+WHAM tr/ files were unreadable on BeeGFS, which is why train-360 was never built.
+Diagnose that read error first (see dataset.md / environment.md).
+```
+
+### v17: Deploy to ARC and start training (reference — best model)
 ```bash
 # From Git Bash (Windows)
 scp -i "/c/Users/Josh Ashik/private_key.pem" \

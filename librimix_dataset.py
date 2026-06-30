@@ -214,6 +214,10 @@ def build_librimix_dataloaders(
     train_ds = LibriMixDataset(librimix_root, train_split, clip_len, augment=train_augment)
     val_ds   = LibriMixDataset(librimix_root, val_split,   clip_len, augment=False)
 
+    # Deeper prefetch hides BeeGFS per-item read latency behind GPU compute
+    # (each __getitem__ does 3 torchaudio.load calls). Only valid with workers.
+    _pf = {"prefetch_factor": 4} if num_workers > 0 else {}
+
     train_loader = DataLoader(
         train_ds,
         batch_size  = batch_size,
@@ -222,6 +226,7 @@ def build_librimix_dataloaders(
         pin_memory  = True,
         drop_last   = True,
         persistent_workers = num_workers > 0,
+        **_pf,
     )
     val_loader = DataLoader(
         val_ds,
@@ -231,6 +236,7 @@ def build_librimix_dataloaders(
         pin_memory  = True,
         drop_last   = False,
         persistent_workers = num_workers > 0,
+        **_pf,
     )
 
     return train_loader, val_loader
