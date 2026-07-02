@@ -1,19 +1,55 @@
 # Training
-<!-- dependencies: two_speaker_train_v17.py (BEST), two_speaker_train_v18.py (capacity ablation), two_speaker_train_v15.py (v15/v16 reference), two_speaker_train_v13.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py, oracle_mask_diagnostic.py -->
+<!-- dependencies: two_speaker_train_v19.py (BEST, train-360 warmstart), two_speaker_train_v17.py (v17/train-100 reference), two_speaker_train_v18.py (capacity ablation), two_speaker_train_v13.py (reference), snn_finetune.py (8-ch legacy), sep_model_v10.py, eval_dataset.py -->
 
-## Current status — v17 is the BEST model; next lever is DATA (train-360)
+## Current status — DONE, benchmark reached (best = v19b, +14.63 dB test)
 
 ```
-Best:         v17 = +9.35 dB (ep180), ALL-TIME BEST, 0.65 dB from the +10 dB target.
-Verdict:      Two capacity bumps now failed — v14 (wider rnn_hidden) and v18 (wider bn_dim,
-              which also overfit late). With v17's finer front-end already in place and the
-              model overfitting when widened, capacity is NOT the bottleneck: DATA diversity is.
-Next step:    Generate train-360 (3× real mixtures, SAME pipeline as dev/test → no distribution
-              shift, unlike v15/v16 dynamic mixing). No code change needed —
-              two_speaker_train_v17.py reads train-100 via LibriMixDataset; point
-              --train_split at train-360 once built. Blocker: WHAM tr/ files unreadable on
-              BeeGFS (the original reason train-360 was never generated) — diagnose first.
+Best:         v19b = +9.93 dB dev (ep72) / +14.63 dB TEST (full 3000-sample test-clean).
+              Conv-TasNet level (~14 dB), past the +10 target. checkpoints_v19b/best_2spk.pt.
+Arc:          v13 DPRNN (+7.22 dev) → v17 finer encoder (+9.35 dev / +14.44 test) →
+              v19b train-360 (+9.93 dev / +14.63 test, +0.19 dB test over v17).
+Verdict:      Capacity ruled out (v14 wider rnn_hidden, v18 wider bn_dim → overfit). DATA was the
+              lever: train-360 (3.6× real mixtures, same pipeline as dev/test) broke past v17.
+
+⚠ METRIC CAVEAT — read this before trusting any dev number in this doc:
+              training-time val_si_sdri is computed on 4-SECOND CROPS (LibriMixDataset crops dev
+              to clip_len=64000). The real Libri2Mix benchmark (eval_dataset.py --split test, FULL
+              utterances) is ~5 dB HIGHER. So every "val SI-SDRi" below UNDERSTATES true
+              performance by ~5 dB (v17 dev +9.35 → test +14.44; v19b dev +9.93 → test +14.63).
+              The +10 target was actually met by ~v17 on the real metric. Always report --split test.
+              Cause: "max" mode zero-pads the shorter source; a 4s crop often lands in a silent
+              (zero-target) region → degenerate SI-SDR that drags the crop average down.
+
+train-360 generation: patched LibriMix to skip WHAM noise for --types mix_clean
+              (patch_librimix_mixclean.py — the metadata referenced never-generated sp08/sp12
+              augmented noise; mix_clean discards noise anyway). See dataset.md.
+
+Possible future work: train-360 from scratch at lr<=5e-4 (a clean non-warmstart result — v19's
+              from-scratch lr=1e-3 DIVERGED); a SpecAugment-off run; test-set eval of earlier versions.
 ```
+
+## Previous status (v19b — COMPLETE, ALL-TIME BEST, warmstart recovery on train-360)
+
+```
+Run:          v19b — recovery of the diverged v19/train-360 run
+Script:       two_speaker_train_v19.py     SLURM: slurm_v19b_twospeaker.sh
+Start:        WARMSTART full model from checkpoints_v19/best_2spk.pt (the +7.95 dev weights,
+              EMA shadow); fresh Adam + scheduler (do NOT restore pre-divergence optimizer state)
+Dataset:      LibriMixDataset train-360 (50,800 real mixtures)
+Fixes:        lr=3e-4 (below the 1e-3 that diverged); loss in fp32 (autocast off) so the SI-SDR
+              sum-of-squares can't overflow fp16; skip any non-finite-loss batch before backward()
+Result:       dev +9.93 dB (ep72) / TEST +14.63 dB (full 3000). Recovered +7.95 and climbed stably
+              past v17; no re-divergence. checkpoints_v19b/best_2spk.pt — ALL-TIME BEST — DO NOT OVERWRITE
+
+## Previous status (v19 — DIVERGED, do not use)
+Run:          v19 — v17 recipe from scratch on train-360 (slurm_v19 → two_speaker_train_v17.py)
+Result:       climbed to dev +7.95 (ep26) then DIVERGED: +7.95 → -12.8 (ep32) → NaN (ep36).
+Cause:        plateau never decayed the LR (val kept improving) → ~165k steps at full lr=1e-3 →
+              Adam divergence (gradual ep27-35, then fp16 overflow → NaN). The +7.95 checkpoint
+              (checkpoints_v19/best_2spk.pt) survived and became the v19b warmstart source.
+```
+
+## Previous status (v18 — COMPLETE, capacity ablation, did NOT beat v17)
 
 ## Previous status (v18 — COMPLETE, capacity ablation, did NOT beat v17)
 
@@ -36,7 +72,7 @@ Caveat:       v18 also ran batch 24 vs v17's batch 8 (~3× fewer gradient update
 Best ckpt:    checkpoints_v18/best_2spk.pt (val=+8.80 dB)
 ```
 
-## Previous status (v17 — COMPLETE, ALL-TIME BEST +9.35 dB)
+## Previous status (v17 — COMPLETE, +9.35 dev / +14.44 test; best on train-100)
 
 ```
 Run:          v17 — finer encoder (k=16, s=8) FROM SCRATCH + reference DPRNN recipe
@@ -64,7 +100,7 @@ Result:       best val SI-SDRi = +9.35 dB (ep180), gap ≈ 0 throughout the clim
               until ~ep110 (uninterrupted improvement). +2.13 dB over v13 — the biggest jump
               since the DPRNN change, and proof that the coarse stride-16 front-end was the
               ceiling. Bar that v18 had to beat (and didn't).
-Best ckpt:    checkpoints_v17/best_2spk.pt (val=+9.35 dB) — ALL-TIME BEST — DO NOT OVERWRITE
+Best ckpt:    checkpoints_v17/best_2spk.pt (val=+9.35 dB / +14.44 test) — best on train-100 — DO NOT OVERWRITE
 ```
 
 ## Previous status (v16 — COMPLETE)
@@ -285,8 +321,10 @@ ep 100:   COMPLETE — test SI-SDRi +0.05 dB, channel collapse, spike saturation
 | v14 | Libri2Mix | +7.21 dB | Wider DPRNN (rnn_hidden=256); no improvement over v13; data diversity bottleneck |
 | v15 | Libri2Mix (dynamic) | +6.64 dB | Dynamic mixing + speed perturb + full augment stack — over-regularised |
 | v16 | Libri2Mix (dynamic) | +6.79 dB | Dynamic mixing + speed perturb ONLY — still < v13; dynamic mixing diverges from eval |
-| v17 | Libri2Mix (fixed) | **+9.35 dB** (ALL-TIME BEST) | Finer encoder k=16/s=8 from scratch + pure SI-SDR + plateau LR; +2.13 dB over v13 — coarse front-end was the ceiling |
-| v18 | Libri2Mix (fixed) | +8.80 dB | v17 recipe + wider bottleneck (bn_dim=128); below v17 + overfit late → capacity not the bottleneck, DATA is |
+| v17 | Libri2Mix train-100 | +9.35 dev / **+14.44 test** | Finer encoder k=16/s=8 from scratch + pure SI-SDR + plateau LR; +2.13 dB dev over v13 — coarse front-end was the ceiling |
+| v18 | Libri2Mix train-100 | +8.80 dev | v17 recipe + wider bottleneck (bn_dim=128); below v17 + overfit late → capacity not the bottleneck, DATA is |
+| v19 | Libri2Mix train-360 | DIVERGED | v17 recipe from scratch; +7.95 dev (ep26) then NaN — ~165k steps at full lr=1e-3 → Adam divergence |
+| v19b | Libri2Mix train-360 | +9.93 dev / **+14.63 test** (ALL-TIME BEST) | Warmstart from v19's +7.95 at lr=3e-4 + fp32 loss + NaN guard; DATA lever confirmed, Conv-TasNet level |
 
 ---
 
@@ -581,10 +619,13 @@ ARC (~/SNNwSoundSeperation/):
   checkpoints_v15/best_2spk_latest.pt    — v15 ep200 (training complete)
   checkpoints_v16/best_2spk.pt           — v16 best (val=+6.79 dB) — DO NOT OVERWRITE
   checkpoints_v16/best_2spk_latest.pt    — v16 ep200 (training complete)
-  checkpoints_v17/best_2spk.pt           — v17 best (val=+9.35 dB) — ALL-TIME BEST — DO NOT OVERWRITE
+  checkpoints_v17/best_2spk.pt           — v17 best (val=+9.35 dB / +14.44 test) — best on train-100 — DO NOT OVERWRITE
   checkpoints_v17/best_2spk_latest.pt    — v17 ep200 (training complete)
   checkpoints_v18/best_2spk.pt           — v18 best (val=+8.80 dB, capacity ablation) — DO NOT OVERWRITE
   checkpoints_v18/best_2spk_latest.pt    — v18 ep200 (training complete)
+  checkpoints_v19/best_2spk.pt           — v19 +7.95 dev (diverged run's surviving best) — v19b WARMSTART SOURCE, do NOT delete
+  checkpoints_v19b/best_2spk.pt          — v19b +9.93 dev / +14.63 TEST — ALL-TIME BEST — DO NOT OVERWRITE
+  checkpoints_v19b/best_2spk_latest.pt   — v19b latest (train-360 recovery run)
 ```
 
 ### CSV logs
@@ -603,7 +644,8 @@ ARC (~/SNNwSoundSeperation/):
 - v14 (2-spk): `v14_train_log.csv` (ARC, complete — val=+7.21 dB, no improvement over v13)
 - v15 (2-spk): `v15_train_log.csv` (ARC, complete — val=+6.64 dB, over-regularised)
 - v16 (2-spk): `v16_train_log.csv` (ARC, complete — val=+6.79 dB, dynamic mixing diverges)
-- v17 (2-spk): `v17_train_log.csv` (ARC, complete — val=+9.35 dB, ALL-TIME BEST)
+- v17 (2-spk): `v17_train_log.csv` (ARC, complete — val=+9.35 dB / +14.44 test, best on train-100)
+- v19 (2-spk): `v19_train_log.csv` (ARC — DIVERGED at ep36) | v19b: `v19b_train_log.csv` (complete — +9.93 dev / +14.63 test, ALL-TIME BEST)
 - v18 (2-spk): `v18_train_log.csv` (ARC, complete — val=+8.80 dB, capacity ablation)
 
 ---

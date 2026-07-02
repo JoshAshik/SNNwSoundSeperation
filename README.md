@@ -48,13 +48,13 @@ U[t] ← U[t]·(1 - S[t])     # post-spike reset
 
 ## Project Evolution
 
-The project evolved through two tracks: an 8-channel fixed-category separator (v1–v2) and a 2-speaker permutation-invariant separator (v3–v17, active).
+The project evolved through two tracks: an 8-channel fixed-category separator (v1–v2) and a 2-speaker permutation-invariant separator (v3–v19b — **complete, benchmark reached**).
 
 ### 8-Channel Track (v1–v2) — Shelved
 
 Fixed output channels for 8 sound categories (voice, animal, impacts, music, weather, alerts, domestic, tools). Trained on FSD50K. Peak: **+0.15 dB SI-SDRi**. Shelved due to channel collapse and spike saturation.
 
-### 2-Speaker Track (v3–v17) — Active
+### 2-Speaker Track (v3–v19b) — Complete (best: v19b, +14.63 dB test)
 
 | Version | Dataset | Architecture | Val SI-SDRi | Key Change |
 |---------|---------|-------------|-------------|------------|
@@ -72,10 +72,14 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 | v14 | Libri2Mix | DPRNN (wider) | +7.21 dB | rnn_hidden 128→256 — no gain; data-bound |
 | v15 | Libri2Mix (dynamic) | DPRNN | +6.64 dB | Dynamic mixing + full augment — over-regularised |
 | v16 | Libri2Mix (dynamic) | DPRNN | +6.79 dB | Dynamic mixing only — still < v13 (diverges from eval) |
-| **v17** | **Libri2Mix (fixed)** | **DPRNN, finer encoder** | **+9.35 dB** | **k=16/s=8 from scratch + pure SI-SDR — +2.13 dB over v13** |
-| v18 | Libri2Mix (fixed) | DPRNN, bn_dim=128 | +8.80 dB | Wider bottleneck — below v17 + overfit late; capacity not the bottleneck |
+| v17 | Libri2Mix train-100 | DPRNN, finer encoder | +9.35 dev / +14.44 test | k=16/s=8 from scratch + pure SI-SDR — +2.13 dB dev over v13 |
+| v18 | Libri2Mix train-100 | DPRNN, bn_dim=128 | +8.80 dev | Wider bottleneck — below v17 + overfit late; capacity not the bottleneck |
+| v19 | Libri2Mix train-360 | DPRNN, finer encoder | DIVERGED | From scratch at lr=1e-3 → NaN (too many high-LR Adam steps); +7.95 dev survived |
+| **v19b** | **Libri2Mix train-360** | **DPRNN, finer encoder** | **+9.93 dev / +14.63 test** | **Warmstart recovery + train-360 — the DATA lever; Conv-TasNet level** |
 
-**Best so far:** **+9.35 dB (v17)** — 0.65 dB from target. **Target:** val SI-SDRi > **+10 dB** (Conv-TasNet baseline on Libri2Mix: ~14 dB). Two capacity bumps (v14, v18) failed → next lever is more real data (train-360).
+**Best: +14.63 dB test (v19b, train-360)** — Conv-TasNet level, past the +10 target. **Target:** SI-SDRi > **+10 dB** (Conv-TasNet on Libri2Mix ~14 dB) — **achieved**.
+
+> **⚠ Metric note:** the `val SI-SDRi` tracked during training is on **4-second crops** and runs **~5 dB below** the standard **full-utterance** benchmark (`eval_dataset.py --split test`). Every "dev" number above understates true performance by ~5 dB (v17 dev +9.35 → test +14.44). Always report the `--split test` number. The +10 target was actually met on the real metric by ~v17.
 
 ### Key Architectural Decisions
 
@@ -85,7 +89,8 @@ Fixed output channels for 8 sound categories (voice, animal, impacts, music, wea
 - **GRU over SNN separator (v11):** StatefulSNNSeparator required 4000 Python-CUDA dispatches per forward pass (~20s/batch); StatefulGRUSeparator uses a single cuDNN kernel per chunk
 - **DPRNN separator (v13):** GRU separator hit a ~+5.5 dB capacity ceiling (train and val both capped → not overfitting). Dual-path RNN alternates intra-chunk and inter-chunk BiLSTMs; +1.76 dB over v12 to +7.22 dB
 - **Finer encoder, from scratch (v17):** v13–v16 plateaued with a ~0 dB train-val gap (underfitting). The coarse kernel=32/stride=16 front-end is the suspected ceiling; v17 halves both (k=16, s=8), drops the scale-dependent reconstruction loss for pure SI-SDR, and trains end-to-end from scratch with a plateau LR schedule. **Result: +9.35 dB, +2.13 dB over v13** — the front-end was the ceiling, as predicted
-- **Capacity is not the bottleneck — data is (v14, v18):** two attempts to add separator capacity both failed — v14 (wider `rnn_hidden=256`) gained nothing, and v18 (wider `bn_dim=128`, on top of v17's finer front-end) scored *below* v17 (+8.80) and overfit late. The model memorizes the 13,900-utterance train-100 set rather than generalizing. The indicated next lever is more **real** data (train-360), not a bigger model
+- **Capacity is not the bottleneck — data is (v14, v18):** two attempts to add separator capacity both failed — v14 (wider `rnn_hidden=256`) gained nothing, and v18 (wider `bn_dim=128`, on top of v17's finer front-end) scored *below* v17 (+8.80) and overfit late. The model memorizes the 13,900-utterance train-100 set rather than generalizing. The indicated next lever was more **real** data (train-360), not a bigger model
+- **train-360 delivered the benchmark (v19b):** trained the v17 recipe on the 50,800-mixture train-360 split → **+14.63 dB test**, past v17 and at Conv-TasNet level, confirming data was the wall. Getting there took unblocking LibriMix generation (`patch_librimix_mixclean.py` — skip the missing WHAM augmented noise for `mix_clean`) and recovering from a divergence: the first from-scratch run at `lr=1e-3` accumulated too many high-LR Adam steps on the larger split and blew up to NaN, so v19b **warmstarts from the last good checkpoint at `lr=3e-4`** with an fp32 loss and a non-finite-batch skip guard
 
 ## File Structure
 

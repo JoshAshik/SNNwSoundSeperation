@@ -198,8 +198,47 @@ more epochs would only hurt.
   - Next lever (data axis): generate **train-360** — 3× more REAL mixtures from the same generation
     pipeline as dev/test, so it adds genuine speaker/content diversity WITHOUT the distribution shift
     that sank v15/v16's synthetic dynamic mixing. No model/training change needed: point
-    two_speaker_train_v17.py's --train_split at train-360. Blocker: WHAM tr/ files unreadable on BeeGFS
+    two_speaker_train's --train_split at train-360. Blocker: WHAM tr/ files unreadable on BeeGFS
     (the original reason train-360 was never generated) must be diagnosed first.
+
+**train-360 generation: the WHAM "read error" was really missing augmented noise (v19)**
+The documented blocker ("WHAM tr/ unreadable on BeeGFS") was a misdiagnosis. The tr/ dir has 20,000
+readable base noise files; the Libri2Mix train-360 metadata references SPEED-AUGMENTED noise
+(`tr/...sp08.wav`, `sp12`) that LibriMix's `augment_train_noise.py` would create but which was never
+run. So `create_librimix_from_metadata.py`'s `read_sources()` threw on the missing noise file — even
+for `--types mix_clean`, because it reads noise unconditionally before the per-type loop. Since
+`mix_clean` DISCARDS the noise (`sources_to_mix = transformed_sources[:n_src]`), the fix was to skip
+the noise rather than generate ~40k augmented files we'd never use: `patch_librimix_mixclean.py`
+wraps the noise `sf.read` in try/except (silent placeholder on missing file) and gates `write_noise`
+on `'noise' in subdirs`. mix_clean output is byte-identical to a normal run. Result: train-360
+mix_clean generated (50,800 mixtures, 16k/max), integrity-verified (mix≈s1+s2 to 16-bit PCM
+quantization ~1e-4). The LibriMix skip-if-dir-exists guard meant only train-360 was built; dev/test/
+train-100 were left untouched.
+
+**v19 divergence + warmstart recovery (the run that finally beat v17)**
+v19 (v17 recipe from scratch on train-360, lr=1e-3) climbed to +7.95 dev (ep26) then diverged to NaN
+(ep36). Root cause: the plateau scheduler never decayed the LR because val kept setting new bests, so
+the model ran ~26 epochs × 6350 batches ≈ 165k steps at the FULL lr=1e-3 — far more high-LR Adam steps
+than v17 ever took on train-100 (whose val plateaued earlier, decaying its LR on schedule). Adam at high
+LR for that many steps walked off a cliff: a GRADUAL collapse ep27-35 (still at 1e-3), then fp16 overflow
+→ NaN. The LR halving at ep32 was the scheduler reacting to the crash, not the trigger. Lesson: on a
+larger split, "val keeps improving → LR stays high" can silently rack up thousands of extra high-LR steps
+and diverge. Recovery (v19b, two_speaker_train_v19.py): warmstart the full model from the +7.95
+checkpoint (EMA shadow) with a FRESH optimizer at lr=3e-4 (do not restore the pre-divergence Adam
+moments), compute the loss in fp32 (autocast off — stops the fp16 overflow), and skip any non-finite-loss
+batch before backward() (a near-silent max-mode zero-padded target can spike the SI-SDR loss). This
+recovered +7.95 and climbed stably to +9.93 dev / +14.63 test.
+
+**Metric caveat: dev SI-SDRi (4s crops) understates the real benchmark by ~5 dB**
+Discovered at the final test eval: the training-time `val_si_sdri` uses 4-second crops (LibriMixDataset
+crops dev to clip_len=64000), while `eval_dataset.py --split test` scores FULL utterances (the standard
+Libri2Mix benchmark). On the SAME model these differ by ~5 dB: v17 dev +9.35 → test +14.44; v19b dev
++9.93 → test +14.63. Both are Conv-TasNet level. Cause: "max" mode zero-pads the shorter source, so a
+random 4s crop often lands in a silent (zero-target) region → degenerate SI-SDR that drags the crop
+average down; the full utterance averages over it. Implication: the whole project's dev tracking
+(v3→v19b) was a pessimistic proxy, and the +10 target was actually met on the real metric by ~v17, not
+v19. Always report the full-utterance test number, never the dev crop value. (This is also why the
+train-360 gain looks bigger on dev, +0.58, than on the honest test metric, +0.19.)
 
 **Speed perturbation: F.interpolate not torchaudio.resample (v15 fix)**
 Original implementation used `torchaudio.functional.resample` (sinc interpolation) — computed a

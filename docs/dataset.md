@@ -38,13 +38,21 @@ Pre-generated 2-speaker clean speech mixtures from LibriSpeech. Academic standar
 /mnt/beegfs/juashik/librimix/wham_noise/    — WHAM noise (tr/ files unreadable — train-360 not generated)
 ```
 
-**train-360 — now the priority next step (was deferred):** WHAM noise `tr/` files on BeeGFS return
-`System error` when read, which is why train-360 was never generated. Through v17 this was acceptable
-(train-100 got to +9.35 dB). But v18 showed the model now **overfits** train-100 when given more
-capacity → **data diversity is the bottleneck**. train-360 (3× real mixtures, same generation pipeline
-as dev/test, so no distribution shift) is the indicated lever to push past +9.35 toward +10. Diagnosing
-the WHAM `tr/` read error is the gating task; no model/training change is needed afterward (point
-`two_speaker_train_v17.py --train_split train-360`).
+**train-360 — GENERATED (2026-06-30), and it delivered the best model.** 50,800 `mix_clean` mixtures
+at 16k/max, alongside the existing train-100/dev/test. Training the v17 recipe on it (via the v19b
+warmstart run) reached **+14.63 dB test** — Conv-TasNet level, the all-time best. This confirmed the
+v14/v18 verdict that data diversity, not capacity, was the bottleneck.
+
+Generation was blocked by a misdiagnosed "WHAM read error" — the `tr/` dir is fine (20,000 readable
+base files), but the train-360 metadata references **speed-augmented** noise (`tr/...sp08.wav`,
+`sp12`) that LibriMix's `augment_train_noise.py` would create and which was never run. LibriMix's
+`create_librimix_from_metadata.py` reads the noise unconditionally (even for `--types mix_clean`, which
+discards it), so it threw on the missing files. **Fix: `patch_librimix_mixclean.py`** — wraps the noise
+`sf.read` in try/except (silent placeholder) and gates `write_noise` on `'noise' in subdirs`, so
+`mix_clean` generation never touches WHAM. `mix_clean` output is byte-identical to a normal run. The
+generator's skip-if-output-dir-exists guard meant only train-360 was built; existing splits untouched.
+Generated via `gen_train360.sh`, integrity-checked with `check_train360.py` (`mix≈s1+s2` to ~1e-4,
+the 16-bit PCM quantization floor). See decisions.md "train-360 generation".
 
 ### File naming
 Each file is named `<utt1_id>_<utt2_id>.wav`. The `s1/` and `s2/` files share the same stem as `mix_clean/`. The dataset loader pairs them by stem.

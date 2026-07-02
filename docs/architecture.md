@@ -283,10 +283,10 @@ SeparationLoss(
 
 ---
 
-## v17 config (sep_model_v10.py) — BEST (+9.35 dB)
+## v17 config (sep_model_v10.py) — the best ARCHITECTURE (v19b/train-360 uses it → +14.63 dB test)
 
 ```python
-# v17 (dprnn v13-sized + FINER ENCODER, from scratch — ALL-TIME BEST):
+# v17 (dprnn v13-sized + FINER ENCODER) — this architecture, trained on train-360 (v19b), is the best:
 {"n_filters":256, "kernel_sz":16, "stride":8,          # finer front-end (was 32/16)
  "hidden":128, "n_layers":6, "dropout":0.1,
  "snn_mode":"dprnn", "snn_chunk":200, "n_speakers":2,
